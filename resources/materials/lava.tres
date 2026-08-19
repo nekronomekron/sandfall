@@ -1,0 +1,29 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="1_material"]
+[ext_resource type="Script" path="res://scripts/materials/material_transition.gd" id="2_transition"]
+
+[sub_resource type="Resource" script_class="MaterialTransition" id="Solidify"]
+script = ExtResource("2_transition")
+trigger = 1
+threshold_celsius = 700.0
+becomes = &"stone"
+resets_temperature = true
+result_celsius = 20.0
+
+[resource]
+script = ExtResource("1_material")
+material_name = &"lava"
+display_name = "Lava"
+selectable = true
+color = Color(0.94, 0.35, 0.08, 1)
+grain = 0.08
+phase = 3
+density = 2400.0
+dispersion = 2
+friction = 0.5
+starts_static = false
+conductivity = 0.16
+heat_capacity = 8.0
+default_celsius = 1200.0
+transitions = Array[ExtResource("2_transition")]([SubResource("Solidify")])

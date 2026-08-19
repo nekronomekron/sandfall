@@ -1,0 +1,28 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="1_material"]
+[ext_resource type="Script" path="res://scripts/materials/material_transition.gd" id="2_transition"]
+
+[sub_resource type="Resource" script_class="MaterialTransition" id="Condense"]
+script = ExtResource("2_transition")
+trigger = 1
+threshold_celsius = 95.0
+becomes = &"water"
+resets_temperature = false
+
+[resource]
+script = ExtResource("1_material")
+material_name = &"steam"
+display_name = "Dampf"
+selectable = true
+color = Color(0.76, 0.79, 0.86, 1)
+grain = 0.06
+phase = 4
+density = 60.0
+dispersion = 3
+friction = 0.02
+starts_static = false
+conductivity = 0.04
+heat_capacity = 0.8
+default_celsius = 110.0
+transitions = Array[ExtResource("2_transition")]([SubResource("Condense")])

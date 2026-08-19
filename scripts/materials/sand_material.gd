@@ -1,0 +1,144 @@
+class_name SandMaterial
+extends Resource
+
+## Ein Materialtyp. Es existiert genau eine Instanz pro Typ, niemals eine pro
+## Pixel: das Gitter speichert nur die numerische [member id].
+##
+## NEUES MATERIAL: eine neue .tres-Datei unter res://resources/materials/
+## anlegen, dieses Skript als Resource-Typ waehlen, ausfuellen und in die Liste
+## von res://resources/material_library.tres eintragen. Sonst ist nichts zu
+## tun - Toolbar, Renderer, Simulation und Gravitationsfeld lesen alles aus
+## diesen Eigenschaften.
+##
+## NEUE EIGENSCHAFT: hier ein @export ergaenzen und dort auswerten, wo sie
+## wirkt. Liegt sie im Schleifenkern von Bewegung, Waerme oder Renderer, gehoert
+## sie zusaetzlich in [MaterialLookups] - Property-Zugriffe auf eine Resource
+## kosten in GDScript ein Vielfaches eines Packed-Array-Zugriffs.
+
+enum Phase {
+	EMPTY,   ## Luft. Bewegt sich nicht, wird von allem verdraengt.
+	SOLID,   ## Bewegt sich nie, auch ohne Static-Flag (z.B. Eis).
+	POWDER,  ## Faellt entlang der Gravitation und rutscht diagonal ab (Sand, Stein).
+	LIQUID,  ## Wie POWDER, breitet sich zusaetzlich senkrecht zur Gravitation aus.
+	GAS,     ## Wie LIQUID, aber ENTGEGEN der Gravitation (Auftrieb).
+}
+
+@export_group("Identitaet")
+
+## Eindeutiger Schluessel, ueber den andere Resourcen dieses Material
+## ansprechen - etwa [member MaterialTransition.becomes]. Klein und ohne
+## Leerzeichen, z.B. &"water".
+@export var material_name: StringName = &""
+
+## Beschriftung in Toolbar und HUD.
+@export var display_name: String = ""
+
+## Taucht das Material als Knopf in der Toolbar auf?
+@export var selectable: bool = true
+
+## Abweichende Beschriftung des Toolbar-Knopfes. Leer = [member display_name].
+## Das leere Material heisst im HUD "Leer", auf dem Knopf aber "Radierer".
+@export var toolbar_label: String = ""
+
+@export_group("Aussehen")
+
+@export var color: Color = Color.MAGENTA
+
+## Farbrauschen pro Zelle, rein optisch. Laesst Sand koernig wirken.
+@export_range(0.0, 1.0, 0.01) var grain: float = 0.05
+
+@export_group("Physik")
+
+@export var phase: Phase = Phase.SOLID
+
+## Dichteres Material verdraengt leichteres - aber nur innerhalb von Fluiden,
+## siehe [method SandSimulation.can_displace].
+@export var density: float = 1.0
+
+## Wie viele Zellen weit sich das Material pro Schritt senkrecht zur
+## Gravitation ausbreitet. 0 = gar nicht, dann bildet es einen Schuettkegel
+## statt eines Spiegels.
+@export_range(0, 16) var dispersion: int = 0
+
+## Reibung, 0 bis 1. Zwei Wirkungen:
+## [br]- Wie lange sich das Material seitlich ausbreitet, bevor es zur Ruhe
+##   kommt. Wasser (niedrig) laeuft weit, Lava (hoeher) bleibt eher liegen.
+##   Ohne das schiebt sich eine stehende Fluessigkeitsoberflaeche endlos hin
+##   und her.
+## [br]- Wie wahrscheinlich eine bereits ruhende Zelle von einer vorbeifallenden
+##   Nachbarzelle mitgerissen wird. Hohe Reibung = bleibt liegen.
+@export_range(0.0, 1.0, 0.01) var friction: float = 0.35
+
+## Vorgabe fuer das Static-Flag beim Platzieren. Das Flag sitzt bewusst PRO
+## ZELLE und nicht pro Material - derselbe Stein kann unverrueckbarer Boden
+## oder fallendes Geroell sein.
+@export var starts_static: bool = false
+
+@export_group("Waerme")
+
+## Anteil des Temperaturausgleichs mit den Nachbarn pro Waermeschritt.
+@export_range(0.0, 1.0, 0.01) var conductivity: float = 0.08
+
+## Traegheit gegen Temperaturaenderung. Hoch = das Material haelt seine
+## Temperatur lange. Lava braucht das, sonst faellt sie nach wenigen Frames
+## unter ihre Erstarrungsschwelle und ist sofort wieder Stein.
+@export_range(0.1, 20.0, 0.1) var heat_capacity: float = 1.0
+
+## Temperatur, mit der eine Zelle dieses Materials platziert wird. Damit sind
+## Lava (heiss) und Eis (kalt) echte Waerme- bzw. Kaeltequellen, ohne dass es
+## kuenstliche Emitter-Materialien braucht - die Waermeleitung erledigt den Rest.
+@export var default_celsius: float = 20.0
+
+## Aggregatzustands-FSM: Uebergaenge, die im Waermepass geprueft werden.
+@export var transitions: Array[MaterialTransition] = []
+
+@export_subgroup("Dauerquelle")
+
+## Optionale Dauerquelle, die die Zelle aktiv auf [member emit_celsius] zieht.
+## Von keinem mitgelieferten Material benutzt, aber fuer eigene Erweiterungen da.
+@export var emits_heat: bool = false
+@export var emit_celsius: float = 20.0
+@export_range(0.0, 1.0, 0.01) var emit_power: float = 0.0
+
+@export_group("Gravitationsfeld")
+
+## Zellen mit einem Radius groesser 0 strahlen ein Gravitationsfeld ab.
+@export_range(0, 256) var gravity_radius: int = 0
+
+## Multiplikativ: 0 blockt die Schwerkraft, 3 verstaerkt sie, -1 kehrt sie um.
+@export var gravity_factor: float = 1.0
+
+## Anteil des Radius mit voller Wirkung. Ohne Plateau waere ein rein linearer
+## Abfall irrefuehrend: bei Faktor 0 waechst der Gravitationsbetrag dann wie
+## Distanz/Radius, ein "Blocker" mit Radius 44 haette also nur rund drei Zellen
+## echte Wirkung. Mit Plateau wirkt das Feld voll bis Plateau * Radius und rampt
+## erst danach auf die Grundgravitation zurueck.
+@export_range(0.0, 0.95, 0.01) var gravity_plateau: float = 0.65
+
+## Additiver Anteil, z.B. fuer seitlichen "Wind".
+@export var gravity_offset: Vector2 = Vector2.ZERO
+
+## Laufzeit-id: die Position in [member MaterialLibrary.materials]. Wird von
+## [method MaterialLibrary.resolve] gesetzt und ist bewusst nicht exportiert -
+## niemand soll ids von Hand vergeben muessen.
+var id: int = 0
+
+
+## Faellt, rutscht oder steigt dieses Material ueberhaupt?
+func is_movable() -> bool:
+	return phase == Phase.POWDER or phase == Phase.LIQUID or phase == Phase.GAS
+
+
+## Kann durch dieses Material hindurch verdraengt werden? Feststoffe und Pulver
+## nicht: ein Kornhaufen ist ein Gefuege, kein Bad.
+func is_fluid() -> bool:
+	return phase == Phase.LIQUID or phase == Phase.GAS
+
+
+## Steigt entgegen der oertlichen Gravitation auf.
+func is_gas() -> bool:
+	return phase == Phase.GAS
+
+
+func is_gravity_source() -> bool:
+	return gravity_radius > 0

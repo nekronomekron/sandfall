@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="1_material"]
+
+[resource]
+script = ExtResource("1_material")
+material_name = &"sand"
+display_name = "Sand"
+selectable = true
+color = Color(0.84, 0.7, 0.36, 1)
+grain = 0.11
+phase = 2
+density = 1600.0
+dispersion = 0
+friction = 0.55
+starts_static = false
+conductivity = 0.05
+heat_capacity = 1.5
+default_celsius = 20.0

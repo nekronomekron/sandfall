@@ -3,94 +3,100 @@ extends PanelContainer
 
 ## Materialauswahl und Static-Flag.
 ##
-## Die Toolbar liegt in der nativen Fensteraufloesung, nicht im
-## hochskalierten Spiel-SubViewport. Deshalb darf hier eine normale Schriftgroesse
-## stehen und der Text wird 1:1 gerastert - scharf statt hochskaliert.
+## Die Toolbar liegt in der nativen Fensteraufloesung, nicht im hochskalierten
+## Spiel-SubViewport. Deshalb darf hier eine normale Schriftgroesse stehen und
+## der Text wird 1:1 gerastert - scharf statt hochskaliert.
 ##
-## Die Buttonliste wird aus MaterialDB erzeugt: ein neues Material taucht hier
-## automatisch auf, sobald es in der Registry steht und selectable ist.
+## Die Knopfliste entsteht zur Laufzeit aus der [MaterialRegistry]: ein neues
+## Material taucht hier von selbst auf, sobald es in der Bibliothek steht und
+## [member SandMaterial.selectable] gesetzt ist.
 
 signal material_selected(id: int)
 signal reset_pressed()
 
-const FONT_SIZE := 13
-const PANEL_WIDTH := 150
+@export_group("Verdrahtung")
 
-var selected_id: int = MaterialDB.SAND
+## Woher die Materialliste kommt. Im Editor zuweisen.
+@export var registry: MaterialRegistry
+
+@export_group("Darstellung")
+
+@export var font_size := 13
+
+## Wie stark die Materialfarbe fuer die Beschriftung aufgehellt wird.
+@export_range(0.0, 1.0, 0.05) var label_lightening := 0.3
+
+## Beschriftungsfarbe des Radierers, der keine sinnvolle eigene Farbe hat.
+@export var eraser_label_color := Color(0.80, 0.80, 0.83)
+
+## Welches Material beim Start ausgewaehlt ist.
+@export var default_material := &"sand"
+
+var selected_id: int = MaterialLibrary.EMPTY_ID
 var place_static: bool = false
 
-var _static_box: CheckBox
+@onready var _material_list: VBoxContainer = %MaterialList
+@onready var _static_check: CheckBox = %StaticCheck
+@onready var _reset_button: Button = %ResetButton
+
 var _buttons: Dictionary = {}
 
+
 func _ready() -> void:
-	custom_minimum_size = Vector2(PANEL_WIDTH, 0)
+	registry.build()
+	_static_check.toggled.connect(_on_static_toggled)
+	_reset_button.pressed.connect(func() -> void: reset_pressed.emit())
+	_build_material_buttons()
+	select(registry.id_of(default_material))
 
-	var margin := MarginContainer.new()
-	for side in ["left", "right", "top", "bottom"]:
-		margin.add_theme_constant_override("margin_" + side, 8)
-	add_child(margin)
 
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 2)
-	margin.add_child(box)
+## Waehlt ein Material aus, als haette der Nutzer den Knopf gedrueckt.
+func select(id: int) -> void:
+	if id < 0 or not _buttons.has(id):
+		return
+	_buttons[id].button_pressed = true
+	_apply_selection(id)
 
-	var title := Label.new()
-	title.text = "MATERIAL"
-	title.add_theme_font_size_override("font_size", FONT_SIZE)
-	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	box.add_child(title)
 
+func _build_material_buttons() -> void:
 	var group := ButtonGroup.new()
-	for d in MaterialDB.defs():
-		if not d.selectable:
+	for id in registry.count():
+		var material := registry.get_material(id)
+		if not material.selectable:
 			continue
-		var b := Button.new()
-		b.toggle_mode = true
-		b.button_group = group
-		b.text = "Radierer" if d.id == MaterialDB.EMPTY else d.display_name
-		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.add_theme_font_size_override("font_size", FONT_SIZE)
-		var col := _label_color(d)
-		b.add_theme_color_override("font_color", col)
-		b.add_theme_color_override("font_hover_color", col)
-		b.add_theme_color_override("font_pressed_color", col)
-		b.pressed.connect(_on_material_pressed.bind(d.id))
-		box.add_child(b)
-		_buttons[d.id] = b
-	if _buttons.has(selected_id):
-		_buttons[selected_id].button_pressed = true
+		var button := Button.new()
+		button.toggle_mode = true
+		button.button_group = group
+		button.text = _label_of(material)
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.add_theme_font_size_override("font_size", font_size)
+		var colour := _label_colour(material)
+		for state in ["font_color", "font_hover_color", "font_pressed_color"]:
+			button.add_theme_color_override(state, colour)
+		button.pressed.connect(_apply_selection.bind(id))
+		_material_list.add_child(button)
+		_buttons[id] = button
 
-	box.add_child(HSeparator.new())
 
-	_static_box = CheckBox.new()
-	_static_box.text = "statisch"
-	_static_box.add_theme_font_size_override("font_size", FONT_SIZE)
-	_static_box.tooltip_text = "Static-Flag pro Zelle: Schwerkraft wirkt nicht."
-	_static_box.toggled.connect(func(on: bool) -> void: place_static = on)
-	box.add_child(_static_box)
-	_sync_static_default()
+func _label_of(material: SandMaterial) -> String:
+	return material.toolbar_label if not material.toolbar_label.is_empty() \
+		else material.display_name
 
-	var reset := Button.new()
-	reset.text = "Zuruecksetzen"
-	reset.add_theme_font_size_override("font_size", FONT_SIZE)
-	reset.pressed.connect(func() -> void: reset_pressed.emit())
-	box.add_child(reset)
 
-func _label_color(d: MaterialDef) -> Color:
-	if d.id == MaterialDB.EMPTY:
-		return Color(0.80, 0.80, 0.83)
-	return d.color.lightened(0.3)
+func _label_colour(material: SandMaterial) -> Color:
+	if material.phase == SandMaterial.Phase.EMPTY:
+		return eraser_label_color
+	return material.color.lightened(label_lightening)
 
-func _on_material_pressed(id: int) -> void:
+
+func _apply_selection(id: int) -> void:
 	selected_id = id
-	_sync_static_default()
+	# Beim Materialwechsel den Static-Haken auf die Materialvorgabe stellen:
+	# Stein und die Gravitationsbloecke sind per Default statisch, Sand nicht.
+	place_static = registry.get_material(id).starts_static
+	_static_check.set_pressed_no_signal(place_static)
 	material_selected.emit(id)
 
-## Beim Materialwechsel den Static-Haken auf die Materialvorgabe stellen -
-## Stein und Gravitationsbloecke sind per Default statisch, Sand nicht.
-func _sync_static_default() -> void:
-	if _static_box == null:
-		return
-	var d := MaterialDB.get_def(selected_id)
-	_static_box.set_pressed_no_signal(d.default_static)
-	place_static = d.default_static
+
+func _on_static_toggled(pressed: bool) -> void:
+	place_static = pressed

@@ -1,0 +1,28 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="1_material"]
+[ext_resource type="Script" path="res://scripts/materials/material_transition.gd" id="2_transition"]
+
+[sub_resource type="Resource" script_class="MaterialTransition" id="Thaw"]
+script = ExtResource("2_transition")
+trigger = 0
+threshold_celsius = 2.0
+becomes = &"water"
+resets_temperature = false
+
+[resource]
+script = ExtResource("1_material")
+material_name = &"ice"
+display_name = "Eis"
+selectable = true
+color = Color(0.64, 0.85, 0.96, 1)
+grain = 0.05
+phase = 1
+density = 900.0
+dispersion = 0
+friction = 0.9
+starts_static = true
+conductivity = 0.17
+heat_capacity = 8.0
+default_celsius = -60.0
+transitions = Array[ExtResource("2_transition")]([SubResource("Thaw")])

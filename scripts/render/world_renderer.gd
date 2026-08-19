@@ -1,152 +1,214 @@
 class_name WorldRenderer
 extends Sprite2D
 
-## Zeichnet das Grid - ein Weltpixel = ein Texturpixel.
+## Zeichnet das Gitter - ein Weltpixel ist ein Texturpixel.
 ##
 ## Zwei Stufen, weil beide Seiten unterschiedlich teuer sind:
 ##
-## 1. CPU-Puffer `_px` haelt die Farben der GANZEN Welt. Aktualisiert wird darin
-##    nur, was sich geaendert hat (SimWorld.chunk_render). Ein voller Redraw ueber
-##    589 824 Zellen waere in GDScript pro Frame unbezahlbar, ein Chunk mit 4096
-##    Zellen ist es nicht.
+## 1. Der CPU-Puffer haelt die Farben der GANZEN Welt. Aktualisiert wird darin
+##    nur, was sich geaendert hat. Ein voller Redraw ueber eine halbe Million
+##    Zellen waere in GDScript pro Frame unbezahlbar, ein einzelner Chunk nicht.
 ##
 ## 2. Zur GPU geht nur der sichtbare Ausschnitt. Die ganze Weltentextur
-##    hochzuladen kostete gemessen 17 ms pro Frame (2,4 MB), der Ausschnitt von
-##    320x130 kostet ein Vierzehntel davon. Der Ausschnitt wird zeilenweise aus
-##    `_px` geschnitten - `slice` und `append_array` sind nativ, eine
-##    GDScript-Schleife ueber die Pixel waere hier wieder der Flaschenhals.
+##    hochzuladen kostete gemessen 17 ms pro Frame, der Ausschnitt ein
+##    Vierzehntel davon. Der Ausschnitt wird zeilenweise aus dem Puffer
+##    geschnitten - [method PackedByteArray.slice] und
+##    [method PackedByteArray.append_array] sind nativ, eine GDScript-Schleife
+##    ueber die Pixel waere hier wieder der Flaschenhals.
 
-var world: SimWorld
-var show_heat: bool = true
+const BYTES_PER_PIXEL := 4
 
-var view_w: int = 320
-var view_h: int = 130
+@export_group("Verdrahtung")
 
-var _defs: Array[MaterialDef]
-var _img: Image
-var _tex: ImageTexture
-var _px: PackedByteArray
-var _grain: PackedByteArray  ## fester Rauschwert pro Zelle, damit Sand koernig wirkt
-var _row_bytes: int = 0
+## Welche Simulation gezeichnet wird. Im Editor zuweisen.
+@export var simulation: SandSimulation
 
-## Flache Material-Lookups (Index = Material-id). Gleiche Begruendung wie in
-## Simulation: ein Property-Zugriff auf die MaterialDef-Resource kostet im
-## Schleifenkern ein Vielfaches eines Packed-Array-Zugriffs, und dieser Kern
-## laeuft ueber jede Zelle jedes geaenderten Chunks.
-var _col_r: PackedFloat32Array
-var _col_g: PackedFloat32Array
-var _col_b: PackedFloat32Array
-var _grain_amt: PackedFloat32Array
+@export_group("Waermetoenung")
 
-const HOT := Color(1.0, 0.35, 0.08)
-const COLD := Color(0.40, 0.72, 1.0)
+## Faerbt heisse Zellen rot und kalte blau ein.
+@export var show_heat := true:
+	set(value):
+		show_heat = value
+		if is_inside_tree() and _grid != null:
+			redraw_all()
 
-func setup(w: SimWorld, vw: int, vh: int) -> void:
-	world = w
-	view_w = mini(vw, w.width)
-	view_h = mini(vh, w.height)
-	_row_bytes = view_w * 4
-	_defs = MaterialDB.defs()
-	var n := _defs.size()
-	_col_r.resize(n)
-	_col_g.resize(n)
-	_col_b.resize(n)
-	_grain_amt.resize(n)
-	for i in range(n):
-		_col_r[i] = _defs[i].color.r
-		_col_g[i] = _defs[i].color.g
-		_col_b[i] = _defs[i].color.b
-		_grain_amt[i] = _defs[i].grain * 2.0
-	_px.resize(w.cell_count * 4)
-	_grain.resize(w.cell_count)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 20260818
-	for i in range(w.cell_count):
-		_grain[i] = rng.randi() & 0xFF
+@export var hot_color := Color(1.0, 0.35, 0.08)
+@export var cold_color := Color(0.40, 0.72, 1.0)
+
+## Ab dieser Temperatur beginnt die Rotfaerbung, und ueber diese Spanne
+## erreicht sie ihre volle Staerke.
+@export var hot_starts_at := 45.0
+@export var hot_full_after := 260.0
+@export_range(0.0, 1.0, 0.05) var hot_max_blend := 0.7
+
+## Dasselbe nach unten fuer die Blaufaerbung.
+@export var cold_starts_at := 5.0
+@export var cold_full_after := 55.0
+@export_range(0.0, 1.0, 0.05) var cold_max_blend := 0.45
+
+@export_group("Koernung")
+
+## Fester Startwert, damit das Farbrauschen ueber Neustarts hinweg gleich
+## aussieht - sonst flimmert ein Screenshot-Vergleich.
+@export var grain_seed := 20260818
+
+## Zeitmessung fuers HUD.
+var last_draw_usec: int = 0
+
+var _grid: CellGrid
+var _lookups: MaterialLookups
+var _view_size := Vector2i.ZERO
+var _row_bytes := 0
+
+var _image: Image
+var _image_texture: ImageTexture
+## Farben der ganzen Welt, RGBA8.
+var _pixels: PackedByteArray
+## Fester Rauschwert pro Zelle, damit Sand koernig statt flimmernd wirkt.
+var _grain: PackedByteArray
+
+
+func _ready() -> void:
+	centered = false
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+
+
+## Bindet den Renderer an eine Simulation. Die Groesse des sichtbaren
+## Ausschnitts kommt vom eigenen Viewport - also aus den Projekteinstellungen,
+## siehe [WorldView].
+##
+## Wird bewusst von [Main] aufgerufen und nicht im eigenen [method Node._ready]:
+## der SubViewport bekommt seine Groesse erst von [WorldView], und [Main] ist
+## der einzige Knoten, dessen [method Node._ready] garantiert nach allen
+## anderen laeuft.
+func attach(target: SandSimulation) -> void:
+	simulation = target
+	_grid = target.grid
+	_lookups = target.registry.lookups
+
+	var viewport_size := Vector2i(get_viewport().get_visible_rect().size)
+	_view_size = Vector2i(
+		mini(viewport_size.x, _grid.width),
+		mini(viewport_size.y, _grid.height))
+	_row_bytes = _view_size.x * BYTES_PER_PIXEL
+
+	_pixels.resize(_grid.cell_count * BYTES_PER_PIXEL)
+	_build_grain()
 
 	var blank := PackedByteArray()
-	blank.resize(view_w * view_h * 4)
-	_img = Image.create_from_data(view_w, view_h, false, Image.FORMAT_RGBA8, blank)
-	_tex = ImageTexture.create_from_image(_img)
-	texture = _tex
-	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
-	centered = false
+	blank.resize(_view_size.x * _view_size.y * BYTES_PER_PIXEL)
+	_image = Image.create_from_data(_view_size.x, _view_size.y, false,
+		Image.FORMAT_RGBA8, blank)
+	_image_texture = ImageTexture.create_from_image(_image)
+	texture = _image_texture
 	redraw_all()
 
-## Alles neu zeichnen. Muss die Rechtecke mitsetzen, nicht nur die Flags -
+
+func view_size() -> Vector2i:
+	return _view_size
+
+
+## Alles neu zeichnen. Muss die Rechtecke mitsetzen und nicht nur die Flags,
 ## sonst waeren die Chunks als schmutzig markiert, aber mit leerem Bereich.
 func redraw_all() -> void:
-	for ci in range(world.chunk_count):
-		world.mark_render_full(ci)
+	if _grid == null:
+		return
+	for chunk in _grid.chunk_count:
+		_grid.mark_redraw_full(chunk)
 
-## `view_x` / `view_y` ist die linke obere Ecke des sichtbaren Ausschnitts in
-## Weltkoordinaten. Der Aufrufer klemmt sie so, dass das Fenster in der Welt
-## liegt.
-func update_dirty(view_x: int, view_y: int) -> void:
-	var w := world
-	# 1) Geaenderte Bereiche in den CPU-Puffer zeichnen. Nicht den ganzen Chunk:
-	# das Render-Dirty-Rect grenzt es auf das ein, was sich wirklich geaendert
-	# hat - bei lokaler Aktivitaet ein paar hundert statt 4096 Zellen.
-	for ci in range(w.chunk_count):
-		if w.chunk_render[ci] == 0:
+
+## [param view_origin] ist die linke obere Ecke des sichtbaren Ausschnitts in
+## Weltkoordinaten.
+func redraw(view_origin: Vector2i) -> void:
+	if _grid == null:
+		return
+	var started := Time.get_ticks_usec()
+	_refresh_dirty_chunks()
+	_upload_visible_window(view_origin)
+	last_draw_usec = Time.get_ticks_usec() - started
+
+
+## Geaenderte Bereiche in den CPU-Puffer zeichnen. Nicht den ganzen Chunk: das
+## Redraw-Rechteck grenzt es auf das ein, was sich wirklich geaendert hat.
+func _refresh_dirty_chunks() -> void:
+	for chunk in _grid.chunk_count:
+		if _grid.chunk_needs_redraw[chunk] == 0:
 			continue
-		var b := ci * 4
-		var x0 := w.chunk_render_rect[b]
-		var y0 := w.chunk_render_rect[b + 1]
-		var x1 := w.chunk_render_rect[b + 2]
-		var y1 := w.chunk_render_rect[b + 3]
-		w.clear_render_rect(ci)
-		if x0 > x1 or y0 > y1:
+		var base := chunk * CellGrid.BOUNDS_STRIDE
+		var left := _grid.redraw_bounds[base]
+		var top := _grid.redraw_bounds[base + 1]
+		var right := _grid.redraw_bounds[base + 2]
+		var bottom := _grid.redraw_bounds[base + 3]
+		_grid.clear_redraw_bounds(chunk)
+		if left > right or top > bottom:
 			continue
-		_draw_rect(x0, y0, x1, y1)
+		_draw_area(left, top, right, bottom)
 
-	# 2) Sichtbaren Ausschnitt zur GPU
-	var vx := clampi(view_x, 0, w.width - view_w)
-	var vy := clampi(view_y, 0, w.height - view_h)
-	position = Vector2(vx, vy)
 
-	var out := PackedByteArray()
-	for row in range(view_h):
-		var off := ((vy + row) * w.width + vx) * 4
-		out.append_array(_px.slice(off, off + _row_bytes))
-	_img.set_data(view_w, view_h, false, Image.FORMAT_RGBA8, out)
-	_tex.update(_img)
+func _upload_visible_window(view_origin: Vector2i) -> void:
+	var origin_x := clampi(view_origin.x, 0, _grid.width - _view_size.x)
+	var origin_y := clampi(view_origin.y, 0, _grid.height - _view_size.y)
+	position = Vector2(origin_x, origin_y)
 
-## Zeichnet den Bereich (x0,y0)-(x1,y1) einschliesslich in den CPU-Puffer.
-func _draw_rect(x0: int, y0: int, x1: int, y1: int) -> void:
-	var w := world
-	var mats := w.mat
-	var temps := w.temp
+	var window := PackedByteArray()
+	for row in _view_size.y:
+		var offset := ((origin_y + row) * _grid.width + origin_x) * BYTES_PER_PIXEL
+		window.append_array(_pixels.slice(offset, offset + _row_bytes))
+	_image.set_data(_view_size.x, _view_size.y, false, Image.FORMAT_RGBA8, window)
+	_image_texture.update(_image)
+
+
+## Zeichnet den Bereich einschliesslich beider Ecken in den CPU-Puffer.
+func _draw_area(left: int, top: int, right: int, bottom: int) -> void:
+	# Lokale Aliase auf alles, was hier im Schleifenkern liegt. Der groesste
+	# Einzelposten des Renderns war gemessen nicht der Texturupload, sondern
+	# genau diese Zugriffe.
+	var materials := _grid.material_id
+	var temperatures := _grid.celsius
 	var grain := _grain
-	var px := _px
-	var heat := show_heat
-	var col_r := _col_r
-	var col_g := _col_g
-	var col_b := _col_b
-	var grain_amt := _grain_amt
-	for y in range(y0, y1 + 1):
-		var row := y * w.width
-		for x in range(x0, x1 + 1):
-			var i := row + x
-			var m := mats[i]
-			var g := (float(grain[i]) / 255.0 - 0.5) * grain_amt[m]
-			var r := col_r[m] + g
-			var gr := col_g[m] + g
-			var b := col_b[m] + g
-			if heat:
-				var t := temps[i]
-				if t > 45.0:
-					var f := clampf((t - 45.0) / 260.0, 0.0, 0.7)
-					r = lerpf(r, HOT.r, f)
-					gr = lerpf(gr, HOT.g, f)
-					b = lerpf(b, HOT.b, f)
-				elif t < 5.0:
-					var f2 := clampf((5.0 - t) / 55.0, 0.0, 0.45)
-					r = lerpf(r, COLD.r, f2)
-					gr = lerpf(gr, COLD.g, f2)
-					b = lerpf(b, COLD.b, f2)
-			var o := i * 4
-			px[o] = int(clampf(r, 0.0, 1.0) * 255.0)
-			px[o + 1] = int(clampf(gr, 0.0, 1.0) * 255.0)
-			px[o + 2] = int(clampf(b, 0.0, 1.0) * 255.0)
-			px[o + 3] = 255
+	var pixels := _pixels
+	var width := _grid.width
+	var tint_by_heat := show_heat
+	var color_red := _lookups.color_red
+	var color_green := _lookups.color_green
+	var color_blue := _lookups.color_blue
+	var grain_amount := _lookups.grain_amount
+
+	for y in range(top, bottom + 1):
+		var row := y * width
+		for x in range(left, right + 1):
+			var cell := row + x
+			var material := materials[cell]
+			var noise := (float(grain[cell]) / 255.0 - 0.5) * grain_amount[material]
+			var red := color_red[material] + noise
+			var green := color_green[material] + noise
+			var blue := color_blue[material] + noise
+
+			if tint_by_heat:
+				var celsius := temperatures[cell]
+				if celsius > hot_starts_at:
+					var blend := clampf((celsius - hot_starts_at) / hot_full_after,
+						0.0, hot_max_blend)
+					red = lerpf(red, hot_color.r, blend)
+					green = lerpf(green, hot_color.g, blend)
+					blue = lerpf(blue, hot_color.b, blend)
+				elif celsius < cold_starts_at:
+					var blend := clampf((cold_starts_at - celsius) / cold_full_after,
+						0.0, cold_max_blend)
+					red = lerpf(red, cold_color.r, blend)
+					green = lerpf(green, cold_color.g, blend)
+					blue = lerpf(blue, cold_color.b, blend)
+
+			var offset := cell * BYTES_PER_PIXEL
+			pixels[offset] = int(clampf(red, 0.0, 1.0) * 255.0)
+			pixels[offset + 1] = int(clampf(green, 0.0, 1.0) * 255.0)
+			pixels[offset + 2] = int(clampf(blue, 0.0, 1.0) * 255.0)
+			pixels[offset + 3] = 255
+
+
+func _build_grain() -> void:
+	_grain.resize(_grid.cell_count)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = grain_seed
+	for cell in _grid.cell_count:
+		_grain[cell] = rng.randi() & 0xFF
