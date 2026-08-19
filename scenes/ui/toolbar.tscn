@@ -3,32 +3,32 @@
 [ext_resource type="Script" path="res://scripts/ui/toolbar.gd" id="1_toolbar"]
 
 [node name="Toolbar" type="PanelContainer"]
-custom_minimum_size = Vector2(150, 0)
-offset_right = 150.0
-offset_bottom = 260.0
+custom_minimum_size = Vector2(168, 0)
+offset_right = 168.0
+offset_bottom = 300.0
 script = ExtResource("1_toolbar")
 
 [node name="Margin" type="MarginContainer" parent="."]
 layout_mode = 2
-theme_override_constants/margin_left = 8
+theme_override_constants/margin_left = 9
 theme_override_constants/margin_top = 8
-theme_override_constants/margin_right = 8
+theme_override_constants/margin_right = 9
 theme_override_constants/margin_bottom = 8
 
 [node name="Column" type="VBoxContainer" parent="Margin"]
 layout_mode = 2
-theme_override_constants/separation = 2
+theme_override_constants/separation = 4
 
 [node name="Title" type="Label" parent="Margin/Column"]
 layout_mode = 2
 mouse_filter = 2
-theme_override_font_sizes/font_size = 13
+theme_override_font_sizes/font_size = 12
 text = "MATERIAL"
 
 [node name="MaterialList" type="VBoxContainer" parent="Margin/Column"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_constants/separation = 2
+theme_override_constants/separation = 3
 
 [node name="Separator" type="HSeparator" parent="Margin/Column"]
 layout_mode = 2
@@ -37,11 +37,11 @@ layout_mode = 2
 unique_name_in_owner = true
 layout_mode = 2
 tooltip_text = "Static-Flag pro Zelle: Schwerkraft wirkt nicht."
-theme_override_font_sizes/font_size = 13
+theme_override_font_sizes/font_size = 12
 text = "statisch"
 
 [node name="ResetButton" type="Button" parent="Margin/Column"]
 unique_name_in_owner = true
 layout_mode = 2
-theme_override_font_sizes/font_size = 13
+theme_override_font_sizes/font_size = 12
 text = "Zuruecksetzen"

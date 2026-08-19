@@ -48,7 +48,6 @@ func _seed_content() -> void:
 	var lava := registry.require_id(&"lava")
 	var ice := registry.require_id(&"ice")
 	var sand := registry.require_id(&"sand")
-	var inverter := registry.require_id(&"gravity_inverter")
 
 	var centre_x := grid.width / 2
 	var floor_top := _main.demo_world.floor_top
@@ -68,9 +67,9 @@ func _seed_content() -> void:
 	_fill(grid, Rect2i(centre_x + 130, floor_top - 22, 120, 22), sand)
 	_fill(grid, Rect2i(centre_x + 160, floor_top - 34, 55, 10), lava)
 
-	# Grav-Umkehrer mit Sandkuppel darueber.
-	_fill(grid, Rect2i(centre_x + 84, top + 40, 12, 10), inverter, true)
-	_fill(grid, Rect2i(centre_x + 70, top + 10, 40, 22), sand)
+	# Zone mit umgekehrter Schwerkraft: der Sand darin faellt nach oben.
+	grid.set_gravity_area(Rect2i(centre_x + 60, top - 20, 60, 80), Vector2.UP)
+	_fill(grid, Rect2i(centre_x + 76, top + 40, 28, 14), sand)
 
 
 func _fill(grid: CellGrid, rect: Rect2i, material: int, make_static := false) -> void:

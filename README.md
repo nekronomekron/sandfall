@@ -2,8 +2,8 @@
 
 Falling-Sand-Simulation in Godot 4.7, GDScript. Eine Zelle ist ein Pixel. Drei
 zusammenspielende Systeme: eine Bewegungs-FSM pro Zelle, eine
-temperaturgetriebene Aggregatzustands-FSM und ein ortsabhaengiges
-Gravitationsfeld.
+temperaturgetriebene Aggregatzustands-FSM und ein statisches, aber
+ortsabhaengiges Gravitationsfeld.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -17,8 +17,7 @@ mit den anderen verdrahtet:
 Main                        main.gd - Schleife und Tastenkuerzel
 ├── MaterialRegistry        haelt die MaterialLibrary, baut die Lookups
 ├── SandSimulation          Bewegung, Waerme, Zustandswechsel
-│   └── GravityField        backt das Gravitationsfeld
-├── DemoWorld               Startinhalt (Steinboden)
+├── DemoWorld               Startinhalt: Steinboden und Gravitationszonen
 ├── WorldLayer
 │   └── WorldView           skaliert die Spielansicht ganzzahlig ins Fenster
 ├── WorldViewport           SubViewport in Weltaufloesung
@@ -36,8 +35,9 @@ an und sieht es im Inspektor - nicht in einem Konstruktor.
 
 Ebenso liegen alle Stellschrauben im Inspektor statt als Konstante im Code:
 Weltgroesse und Chunkgroesse, Waermeintervall und Schwerelosigkeitsschwelle an
-der `SandSimulation`, die Waermetoenung am `WorldRenderer`, Zoomstufen und
-Schwenkgeschwindigkeit an der `WorldCamera`, der Pinselradius am `PaintTool`.
+der `SandSimulation`, Koernung und Ausschnitt am `WorldRenderer`, Zoomstufen
+und Schwenkgeschwindigkeit an der `WorldCamera`, der Pinselradius am
+`PaintTool`, die Levelaufloesung am `WorldView`.
 
 | Datei | Verantwortung |
 | --- | --- |
@@ -48,11 +48,11 @@ Schwenkgeschwindigkeit an der `WorldCamera`, der Pinselradius am `PaintTool`.
 | `scripts/materials/material_lookups.gd` | Materialeigenschaften als flache Arrays |
 | `scripts/sim/cell_grid.gd` | Zell- und Chunk-Arrays, Zugriff, Aufwachlogik |
 | `scripts/sim/sand_simulation.gd` | Simulationsschritt: Bewegung, Waerme, Zustandswechsel |
-| `scripts/sim/gravity_field.gd` | Backt das Gravitationsfeld aus abstrahlenden Zellen |
 | `scripts/render/world_renderer.gd` | Gitter -> Textur, nur geaenderte Bereiche |
 | `scripts/view/world_view.gd` | Ganzzahlige Skalierung, Maus -> Weltzelle |
 | `scripts/view/world_camera.gd` | Schwenken und Zoomen |
 | `scripts/world/demo_world.gd` | Startinhalt der Welt |
+| `scripts/world/gravity_zone.gd` | Ein Bereich mit abweichender Schwerkraft (Resource) |
 | `scripts/world/paint_tool.gd` | Zeichnen und Radieren |
 | `scripts/ui/toolbar.gd` | Materialauswahl, Static-Flag |
 | `scripts/ui/hud.gd` | Leistungsdaten und Zelle unter der Maus |
@@ -73,7 +73,7 @@ Eine Datei anlegen, eine Zeile eintragen - kein Code.
 
 Die Position in dieser Liste ist die id, mit der das Gitter arbeitet. Niemand
 vergibt ids von Hand, und es gibt keine `COUNT`-Konstante zu pflegen. Toolbar,
-Renderer, Simulation und Gravitationsfeld lesen alles aus den Eigenschaften der
+Renderer und Simulation lesen alles aus den Eigenschaften der
 Resource: das neue Material taucht von selbst als Knopf in der Toolbar auf.
 
 Fuer Oel etwa `phase = LIQUID`, `density = 850`, `dispersion = 4`,
@@ -98,25 +98,48 @@ Packed-Array-Zugriffs.
 
 ## Zwei getrennte Aufloesungen
 
-| | Aufloesung | Skalierung |
+| | Aufloesung | Ein Pixel belegt |
 | --- | --- | --- |
-| Spielwelt | 576 x 324 (SubViewport) | ganzzahlig hochskaliert, nearest |
-| UI | native Fenstergroesse (1728 x 972) | gar nicht - 1:1 gerastert |
+| Spielwelt | 320 x 180 (SubViewport) | 4 x 4 UI-Pixel |
+| UI | 1280 x 720 (Root-Viewport) | 1 x 1 UI-Pixel |
 
-Beide Zahlen stehen in den **Projekteinstellungen** unter Anzeige > Fenster,
-nicht im Code: `window/size/viewport_width` und `viewport_height` sind die
-Aufloesung der Spielwelt, `window_width_override` und `window_height_override`
-die Fenstergroesse. `WorldView` liest die Ansichtsgroesse beim Start von dort
-und setzt damit den SubViewport.
+**Beide sind Pixelart, beide ganzzahlig skaliert - die Welt ist viermal so grob
+wie die UI.** Auf einem 2560x1440-Schirm wird der Root-Viewport 2x
+vergroessert: ein UI-Pixel belegt dann 2x2 Bildpunkte, ein Weltpixel 8x8.
 
-Die Spielwelt rendert in diesen SubViewport und wird davon **ganzzahlig**
-vergroessert. Nur ganzzahlig: jeder andere Faktor verteilt Weltpixel ungleich
-auf Bildschirmpixel und macht das Bild unruhig. Die UI liegt darueber in der
-nativen Aufloesung und wird nicht mitskaliert - deshalb ist der Text scharf
-statt hochgerechnet.
+Der Weg dahin sind zwei Stufen:
 
-Die Welt selbst ist mit **1024 x 576** Zellen (589 824) groesser als der
-sichtbare Ausschnitt. Man sieht also immer nur einen Teil und scrollt.
+1. Die Spielwelt rendert in den `WorldViewport` mit 320 x 180
+   (`WorldView.level_resolution`). `WorldView` vergroessert dieses Bild
+   ganzzahlig in den Root-Viewport - bei 1280 x 720 also Faktor 4.
+2. Godot vergroessert danach den ganzen Root-Viewport aufs Fenster.
+   `window/stretch/mode="viewport"` heisst: erst alles in 1280 x 720 rendern,
+   dann das fertige Bild skalieren. `scale_mode="integer"` erzwingt dabei
+   ganzzahlige Faktoren.
+
+Dass die UI in Stufe 2 mitskaliert wird, ist der Punkt: die Schrift wird bei
+1280 x 720 gerastert und danach nur noch blockweise vergroessert. Sie ist damit
+Pixelart und trotzdem scharf - nachgemessen wurde beides. Auf 2560x1440 liegt
+**kein einziger** Farbwechsel neben dem 4x-Raster, jeder Basispixel ist also
+ein exakter 4x4-Block.
+
+Dazu gehoert, dass die Schrift ohne Kantenglaettung gerastert wird
+(`gui/theme/default_font_antialiasing=0` samt Hinting und ohne
+Subpixel-Positionierung). Ohne diese Schalter waeren die grauen Randpixel der
+Glyphen mit vergroessert worden: hart skaliert, aber verwaschen aussehend. Mit
+ihnen enthaelt der Titelbereich der Toolbar gemessen genau **zwei** Farben,
+Hintergrund und Schrift.
+
+Die Welt selbst ist mit **1024 x 576** Zellen (589 824) deutlich groesser als
+der sichtbare Ausschnitt von 320 x 180. Man sieht also immer nur einen kleinen
+Teil und scrollt.
+
+Die Materialfarbe steckt in der Toolbar in einem Farbfeld links neben der
+Beschriftung, nicht in der Schriftfarbe. Eingefaerbte Schrift war bei dunklen
+Materialien wie Stein kaum zu lesen; die Beschriftung ist jetzt einheitlich
+hell, und das Farbfeld traegt die Farbe. Die Felder entstehen zur Laufzeit als
+kleine `ImageTexture` aus `SandMaterial.color` - ein neues Material bringt sein
+Feld also von selbst mit.
 
 ## Starten
 
@@ -126,7 +149,8 @@ sichtbare Ausschnitt. Man sieht also immer nur einen Teil und scrollt.
 
 ## Selbsttests
 
-Benchmark, FSM-, Fliess-, Spiegel- und Verdraengungstest laufen headless. Der
+Benchmark, FSM-, Fliess-, Spiegel-, Verdraengungs- und Gravitationstest laufen
+headless. Der
 Eingabetest braucht ein Fenster. Jeder Test liegt in einer eigenen Datei unter
 `scripts/tests/`; `SelfTests.take_over()` verteilt die Startparameter.
 
@@ -134,7 +158,8 @@ Eingabetest braucht ein Fenster. Jeder Test liegt in einer eigenen Datei unter
 "C:/Projects/Godot/Godot_v4.7.2-stable_win64.exe/Godot_v4.7.2-stable_win64_console.exe" --headless --path "C:/Projects/Godot/sandfall" -- --bench
 ```
 
-Ebenso `--fsmtest`, `--flowtest`, `--leveltest`, `--displacetest`. Ohne
+Ebenso `--fsmtest`, `--flowtest`, `--leveltest`, `--displacetest`,
+`--gravitytest`, `--regressiontest`. Ohne
 `--headless` laufen `--inputtest` und `--shot [--frames=N]`; letzterer rendert N
 Frames und schreibt einen Screenshot.
 
@@ -154,7 +179,6 @@ grosszuegig gewaehlt.
 | Leertaste | `pause` | Pause |
 | N | `step` | Einzelschritt (bei Pause) |
 | R | `reset` | Zuruecksetzen |
-| H | `toggle_heat` | Waermetoenung an/aus |
 
 Die Belegung liegt als Input-Map in den Projekteinstellungen und ist dort
 aenderbar, ohne eine Zeile Code anzufassen.
@@ -175,17 +199,31 @@ derselbe Stein kann unverrueckbarer Boden oder fallendes Geroell sein.
 | Sand | Pulver | 0,55 | Bildet Schuettkegel |
 | Wasser | Fluessigkeit | 0,05 | Gefriert bei 0 C, siedet bei 100 C, laeuft weit |
 | Stein | Pulver, statisch | 0,90 | Schmilzt ueber 950 C zu Lava |
-| Eis | Feststoff, statisch | 0,90 | Wird mit -60 C platziert, taut ueber 2 C |
+| Eis | Feststoff | 0,90 | Wird mit -60 C platziert, taut ueber 2 C, faellt als Block |
 | Dampf | Gas | 0,02 | Steigt auf, kondensiert unter 95 C |
 | Lava | Fluessigkeit | 0,50 | 1200 C beim Platzieren, erstarrt unter 700 C zu Stein |
-| Grav-Blocker | Pulver, statisch | 0,80 | Hebt die Schwerkraft im Umkreis auf |
-| Grav-Verstaerker | Pulver, statisch | 0,80 | Verdreifacht die Schwerkraft im Umkreis |
-| Grav-Umkehrer | Pulver, statisch | 0,80 | Dreht die Schwerkraft im Umkreis um |
 
 Waerme und Kaelte kommen aus echten Materialien statt aus abstrakten Quellen:
 Lava bringt ihre 1200 Grad mit, Eis seine -60 Grad, und die Waermeleitung macht
 daraus von selbst Waerme- und Kaeltequellen. Beide verbrauchen sich dabei -
 Lava erstarrt zu Stein, Eis taut zu Wasser.
+
+### Feststoff, Pulver, Fluid
+
+Die Phase eines Materials entscheidet, WIE es sich bewegt - ob es sich
+ueberhaupt bewegt, entscheidet das Static-Flag der einzelnen Zelle:
+
+| Phase | Faellt | Rutscht diagonal ab | Breitet sich seitlich aus |
+| --- | --- | --- | --- |
+| Feststoff (Eis) | ja | **nein** | nein |
+| Pulver (Sand, Stein) | ja | ja | nein |
+| Fluessigkeit (Wasser, Lava) | ja | ja | ja |
+| Gas (Dampf) | entgegen der Schwerkraft | ja | ja |
+
+Der Unterschied zwischen Feststoff und Pulver ist genau das diagonale
+Abrutschen: ein Eisblock stapelt sich in Saeulen und behaelt seine Form, ein
+Sandhaufen zerlaeuft zum Kegel. Im Test bleibt ein 20 Zellen breiter Eisblock
+nach dem Fall 20 breit, derselbe Block aus Sand wird 46 breit.
 
 ## Die drei Systeme
 
@@ -220,12 +258,36 @@ sichtbar ueber die sechs Messpunkte von rund 160 auf eine Handvoll Zellen,
 waehrend der neue Stein auf rund 150 Zellen waechst und die Dampfmenge am Ende
 mit der Lava zurueckgeht.
 
-**Gravitationsfeld.** Materialien mit `gravity_radius > 0` strahlen ein Feld
-ab. Ein Blocker (Faktor 0) hebt die Schwerkraft auf, ein Verstaerker (3) erhoeht
-sie, ein Umkehrer (-1) dreht sie um. Das Feld wirkt voll bis
-`gravity_plateau * radius` und rampt erst danach zurueck - ohne dieses Plateau
-haette ein Blocker mit Radius 44 nur rund drei Zellen echte Wirkung, weil ein
-rein linearer Abfall den Betrag wie `d/r` wachsen laesst.
+**Gravitationsfeld (statisch, pro Zelle).** `CellGrid.gravity` haelt einen
+Vektor je Zelle. Gesetzt wird er beim Aufbau des Levels, danach liest die
+Simulation ihn nur noch - es gibt keine Materialien mehr, die zur Laufzeit ein
+eigenes Feld abstrahlen.
+
+Die Grundschwerkraft steht an `SandSimulation.base_gravity`. Abweichende
+Bereiche kommen als `GravityZone`-Resourcen aus `DemoWorld.gravity_zones` und
+werden im Editor gepflegt:
+
+| Vektor | Wirkung |
+| --- | --- |
+| `(0, 1)` | normal nach unten |
+| `(0, -1)` | umgekehrt, Material faellt nach oben |
+| `(0, 0)` | schwerelos, Material bleibt schweben |
+| `(1, 0)` | seitlich |
+| `(0, 3)` | dreifach stark, bis zu `max_steps_per_frame` Zellen pro Schritt |
+
+Ein voller Vektor je Zelle statt einer Zonenliste, weil der Schleifenkern fuer
+jede wache Zelle genau einen Zugriff braucht; eine Liste muesste er pro Zelle
+durchsuchen. Bei 589 824 Zellen kostet das 4,7 MB - und dafuer nichts pro
+Frame, weil nie neu gerechnet wird.
+
+`--gravitytest` prueft vier Kammern nebeneinander, jede mit eigenem Feld:
+
+| Kammer | Ergebnis nach 400 Frames |
+| --- | --- |
+| `(0, 1)` normal | Schwerpunkt 54,8 Zellen nach unten |
+| `(0, -1)` umgekehrt | Schwerpunkt 54,8 Zellen nach oben |
+| `(0, 0)` schwerelos | Schwerpunkt bewegt sich um 0,5 Zellen |
+| `(1, 0)` seitlich | Schwerpunkt 24,8 Zellen nach rechts |
 
 ## Verdraengung: wer darf durch wen hindurch?
 
@@ -334,7 +396,7 @@ Nur Materialien mit `dispersion > 0` durchlaufen den seitlichen Ausweichschritt.
 | Dampf | Gas | breitet sich unter der Decke aus | von 30 auf 152 Spalten |
 | Sand | Pulver (`dispersion = 0`) | Schuettkegel, KEIN Spiegel | Kegel erhalten, Hoehe 1-88 |
 
-Pulver - Sand, Stein und die Gravitationsmaterialien - haben `dispersion = 0`
+Pulver - Sand und Stein - haben `dispersion = 0`
 und sind damit gar nicht betroffen. Das ist auch richtig so: ein Schuettkegel
 soll stehen bleiben. Die Gegenprobe im Test stellt sicher, dass sich das nicht
 versehentlich mitaendert.
@@ -345,17 +407,55 @@ ueberhaupt wegfliesst statt an der Quelle liegen zu bleiben.
 
 ## Performance
 
-Gemessen auf diesem Rechner, 1024 x 576 Zellen, Godot 4.7.2 headless
-(`-- --bench`), Werte pro Simulationsschritt:
+Gemessen auf diesem Rechner, 1024 x 576 Zellen, Godot 4.7 headless
+(`-- --bench`). Der Benchmark misst **Simulation und Rendern zusammen** und
+schluesselt beides auf; der Renderer bekommt dazu die Ausschnittsgroesse des
+Spiels (320 x 180), sonst wuerde er headless die volle Fenstergroesse hochladen.
 
-| Szenario | Median | p95 |
-| --- | --- | --- |
-| Ruhe (alles gesetzt, nichts bewegt sich) | 0,07 ms | 0,10 ms |
-| Typische Nutzung (Wasser + Lava + Gravitation) | 24,9 ms | 45,4 ms |
-| Stresstest (Grossblock Sand + Wasser in freiem Fall) | 156,9 ms | 239,9 ms |
+Die Simulation laeuft in den Selbsttests mit **festem Zufallsstartwert**
+(`SandSimulation.rng_seed`, gesetzt von `TestSupport`). Ohne den streuten zwei
+Laeufe derselben Szene um mehr als 70 Prozent - mehr, als jede Optimierung
+ausmacht. Mit ihm liegen Wiederholungen innerhalb weniger Prozent.
 
-Die Zahlen streuen von Lauf zu Lauf spuerbar, weil die Simulation wuerfelt -
-der Median der typischen Nutzung schwankt um mehrere Millisekunden.
+| Szenario | Median | Waerme | Bewegung | Rendern |
+| --- | --- | --- | --- | --- |
+| Ruhe (alles gesetzt) | 0,3 ms | 0,00 | 0,02 | 0,24 |
+| Becken: Wasser + Sand, **ohne** Lava | 11,3 ms | 0,00 | 10,7 | 0,99 |
+| Becken: dasselbe **mit** Lava | 30,1 ms | 1,90 | 28,0 | 2,35 |
+| Lava allein, kein Wasser | 0,5 ms | 0,83 | 0,99 | 0,29 |
+| Gravitationszone mit Sand | 2,1 ms | 0,00 | 2,0 | 0,62 |
+| Stress: Grossblock in freiem Fall | 131 ms | 0,00 | 136 | 7,7 |
+
+Im laufenden Spiel mit der Demo-Szene: **60 fps bei 6,9 ms Simulation und
+1,7 ms Rendern**.
+
+Die Becken-Zeilen sind gegenueber der vorigen Fassung um 18 bis 35 Prozent
+gestiegen. Das ist der Preis dafuer, dass Sand jetzt tatsaechlich durch Wasser
+sinkt, statt als Floss darauf liegen zu bleiben - siehe unten. Vorher war ein
+Teil der Arbeit schlicht nicht getan worden.
+
+### Warum Lava so teuer ist
+
+Die Szenarien sind absichtlich paarweise gebaut - dieselbe Szene einmal mit und
+einmal ohne Lava. Erst der Vergleich zeigt, WOVON die Zeit draufgeht:
+
+| | ohne Lava | mit Lava | Differenz |
+| --- | --- | --- | --- |
+| Bewegung | 10,7 ms | 28,0 ms | **+17,3** |
+| Rendern | 0,99 ms | 2,35 ms | +1,4 |
+| Waerme | 0,00 ms | 1,90 ms | +1,9 |
+
+**Der Waermepass ist der kleinste der drei Posten.** Lava ist teuer, weil sie
+sich Arbeit *herstellt*: jede verdampfte Wasserzelle wird zu einer Dampfzelle,
+die aufsteigt, oben kondensiert, als Wasser zurueckfaellt und wieder verdampft.
+Im FSM-Test haelt eine Lavapfuetze so dauerhaft rund 350 Dampfzellen in
+Bewegung. Das treibt Bewegung und Rendern, nicht die Waermeleitung.
+
+Wer das guenstiger haben will, dreht an der Ursache, nicht am Waermepass:
+`heat_interval` hoeher, `dispersion` von Dampf kleiner, oder die
+Kondensationsschwelle von Dampf naeher an den Siedepunkt, damit die Blasen
+kuerzer leben. Alles drei aendert das Verhalten sichtbar - deshalb steht hier
+nur der Befund und keine stille Aenderung.
 
 ### Was die Lesbarkeit kostet
 
@@ -396,10 +496,20 @@ Was den Unterschied macht, in der Reihenfolge der gemessenen Wirkung:
   Rendering: 17,2 ms -> 1,6 ms. Der groesste Einzelposten war dabei nicht der
   Texturupload, wie zuerst vermutet, sondern Property-Zugriffe auf die
   Material-Resource im Zeichenkern.
-- **Distanztransformation statt Kreisstempel** im Gravitationsfeld. Vorher pro
-  Quellzelle ein Radius-Kreis, O(Quellen x Flaeche): 98 ms fuer einen
-  10x10-Block. Jetzt zwei Chamfer-Durchlaeufe ueber das Einflussrechteck,
-  O(Flaeche), unabhaengig von der Quellenzahl.
+- **Statisches Gravitationsfeld.** Frueher strahlten Materialien ihr Feld ab,
+  das musste bei jeder Aenderung neu gebacken werden - mit einer
+  Distanztransformation als schnellstem bekanntem Weg immer noch messbar. Jetzt
+  steht das Feld nach dem Levelaufbau fest und kostet pro Frame gar nichts mehr.
+- **Dirty-Rect auch fuer den Waermepass.** Zusammen mit der Meldung bewegter
+  warmer Zellen, ohne die es falsch waere -
+  siehe "Behobene Fehler". Waerme wandert pro Durchlauf
+  hoechstens eine Zelle weit, das Rechteck vom letzten Mal plus ein Zellenrand
+  ist also eine sichere Obermenge. Vorher rechnete der Pass die volle Flaeche
+  jedes betroffenen Chunks durch: Lava im Wasser 6,86 -> 2,36 ms, Lava allein
+  3,69 -> 0,78 ms.
+- **Keine Waermetoenung mehr.** Solange die Temperatur die Farbe beeinflusste,
+  musste jeder thermisch aktive Chunk ganzflaechig neu gezeichnet werden. Ohne
+  sie faellt das weg: im Spiel 18,6 -> 1,9 ms Rendern.
 - **Flache Lookup-Arrays statt Resource-Properties** in allen Schleifenkernen
   (`MaterialLookups`). Simulation und Renderer teilen sich dieselben Arrays -
   gebaut werden sie einmal von der `MaterialRegistry`.
@@ -432,6 +542,77 @@ seitlicher Ausweichschritt kann ueber einem Loch enden, und eine dabei sofort au
 `REST` gesetzte Zelle blieb dort in der Luft stehen. Seitliche Schritte enden
 deshalb nie direkt im Ruhezustand - die Bremse ist allein der Ruhezaehler.
 
+## Behobene Fehler: Lava ohne Dampf, Wasser als Berg
+
+Zwei gemeldete Fehler, beide aus dem Umbau der vorigen Runde. `--regressiontest`
+deckt sie ab.
+
+**Lava heizte nicht mehr.** Das Symptom war nicht "wenig Dampf", sondern
+Stillstand: Lava und Dampf blieben auf einem festen Stand stehen, statt zu
+erstarren und zu kondensieren. Ursache war das neue Dirty-Rect des
+Waermepasses. Es waechst pro Durchlauf um eine Zelle, aber der Pass laeuft nur
+jeden dritten Frame - fallende Lava legt in derselben Zeit mehr zurueck und
+laeuft ihrem eigenen Rechteck davon. Danach ist sie thermisch unsichtbar.
+
+Behoben in `_commit`: eine Zelle, deren Temperatur von der Umgebung abweicht,
+meldet sich beim Waermepass an ihrer neuen Stelle an. Der Test prueft
+ausdruecklich, dass sich die Mengen ueber die Zeit noch AENDERN - eine
+eingefrorene Simulation liefert dreimal denselben Wert.
+
+**Wasser bildete Berge und floss nicht mehr.** (Der Vollstaendigkeit halber:
+was nach diesem Fix bleibt, ist eine Restwelligkeit von 9 bis 13 Zellen, wenn
+Sand aus der Hoehe ins Wasser klatscht. Der Test trennt das ausdruecklich vom
+gemeldeten Fehler - siehe unten.)
+
+ Ein groesserer Sandblock, der
+auf Wasser fiel, blieb als Floss darauf liegen: Saeulenprofil `Sand:28
+Wasser:60`, und die Welt schlief dabei ein. Sand ist mit 1600 dichter als
+Wasser mit 1000 und muss sinken.
+
+Ursache war eine Optimierung, die nur bei einem entstehenden LOCH die Nachbarn
+weckte, mit der Begruendung, bei einer Verdraengung aendere sich an der
+Unterlage ja nichts. Das stimmt fuer die Traglast, aber nicht fuer die
+Verdraengbarkeit: ueber einer Zelle, in die gerade Wasser hochgestiegen ist,
+kann Sand jetzt absinken, wo vorher Sand lag. Ohne Weckruf erfaehrt er das nie.
+Seit die Nachbarn auch bei einer Verdraengung geweckt werden, sinkt der Block
+durch: `Wasser:45 Sand:30`.
+
+Der Test misst beide Faelle ueber fuenf Zufallswuerfe, weil ein einzelner Lauf
+zwischen 0 und ueber 30 Ausreissern schwankt. Er trennt sie dabei:
+
+| Fall | Kriterium | Ergebnis |
+| --- | --- | --- |
+| Sand mitten im Wasser gesetzt | Spiegel exakt flach | 0 Ausreisser, alle fuenf Wuerfe |
+| Dasselbe nach Lava im Becken | Spiegel exakt flach | 0 Ausreisser, alle fuenf Wuerfe |
+| Spritzer, kleiner Sandwurf von oben | Restwelligkeit | 9 Zellen Spanne |
+| Spritzer, grosser Sandwurf von oben | Restwelligkeit | 13 Zellen Spanne |
+
+Die Spritzerfaelle sind bewusst NICHT auf null gefordert: Wasser, das ueber den
+Spiegel geschleudert wird, kann nicht nach unten - Wasser verdraengt kein
+Wasser. Es kommt nur seitlich weiter, und das begrenzt das Umkehr-Budget. Ein
+groesseres Budget glaettet mehr, laesst Fluessigkeiten aber laenger schwappen;
+die Stellschraube ist `MAX_DIRECTION_CHANGES` in `MaterialLookups`.
+
+Auf dem Weg dorthin hatte ich zuerst den Generationsstempel im Verdacht - eine
+Zelle, die nur deshalb abgewiesen wird, weil ihr Ziel sich in diesem Frame
+schon bewegt hat, ist ja aufgeschoben und nicht zur Ruhe gekommen. Diese
+Unterscheidung habe ich eingebaut, gemessen, und wieder entfernt: sie behob den
+Fehler nicht und ist seit dem Weckruf ohnehin abgedeckt, weil genau die Zelle,
+die blockiert hat, sich bewegt hat und dabei ihre Nachbarn weckt.
+
+### Eis gehorchte dem Static-Flag nicht
+
+Eis war als Phase `SOLID` angelegt, und die war definiert als "bewegt sich nie,
+auch ohne Static-Flag". Gleichzeitig steht in `ice.tres` kein
+`starts_static` - der Haken in der Toolbar war also NICHT gesetzt, und das Eis
+lag trotzdem fest. Der Haken hat gelogen.
+
+Behoben, indem `SOLID` jetzt dasselbe verspricht wie jede andere Phase: die
+Zelle faellt, wenn ihr Static-Flag nicht gesetzt ist. Was den Feststoff vom
+Pulver unterscheidet, ist nicht mehr "bewegt sich gar nicht", sondern "rutscht
+nicht diagonal ab" - siehe die Tabelle oben. Damit hat die Phase einen echten
+Zweck, statt nur eine Sperre zu sein.
+
 ## Weg zur unendlichen Welt
 
 Die Welt ist in Chunks von 64 x 64 organisiert (`SandSimulation.chunk_size`) und
@@ -453,12 +634,9 @@ und Entladen am Rand.
 - Bewegung ist auf hoechstens eine Zelle pro Frame pro Zelle begrenzt
   (`max_steps_per_frame` erlaubt bei verstaerkter Gravitation bis zu vier).
 - Die Waermeleitung laeuft nur jeden dritten Frame (`heat_interval`).
-- Thermisch aktive Chunks werden ganzflaechig neu gezeichnet, weil die
-  Waermetoenung sich ueber die ganze Flaeche aendern kann.
 - Keine Latentwaerme: Schmelzen und Erstarren kosten keine Energie.
-- Lava unter Wasser ist ein Dauerlaeufer: sie verdampft laufend Wasser, der
-  Dampf steigt auf und kondensiert oben wieder. Das haelt viele Chunks wach und
-  ist das teuerste, was die Demo-Szene zu bieten hat.
+- Lava unter Wasser ist mit Abstand das teuerste, was die Simulation zu bieten
+  hat - siehe die Aufschluesselung im Abschnitt Performance.
 - Lava (1200 C beim Platzieren) liegt ueber der Schmelzschwelle von Stein
   (950 C). Sie frisst sich deshalb mit der Zeit durch duenne Steinboeden. Das
   ist eine bewusste Regel, faellt aber leicht als Fehler auf - wer es nicht will,

@@ -7,8 +7,8 @@ extends Resource
 ## NEUES MATERIAL: eine neue .tres-Datei unter res://resources/materials/
 ## anlegen, dieses Skript als Resource-Typ waehlen, ausfuellen und in die Liste
 ## von res://resources/material_library.tres eintragen. Sonst ist nichts zu
-## tun - Toolbar, Renderer, Simulation und Gravitationsfeld lesen alles aus
-## diesen Eigenschaften.
+## tun - Toolbar, Renderer und Simulation lesen alles aus diesen
+## Eigenschaften.
 ##
 ## NEUE EIGENSCHAFT: hier ein @export ergaenzen und dort auswerten, wo sie
 ## wirkt. Liegt sie im Schleifenkern von Bewegung, Waerme oder Renderer, gehoert
@@ -17,7 +17,9 @@ extends Resource
 
 enum Phase {
 	EMPTY,   ## Luft. Bewegt sich nicht, wird von allem verdraengt.
-	SOLID,   ## Bewegt sich nie, auch ohne Static-Flag (z.B. Eis).
+	SOLID,   ## Faellt entlang der Gravitation, rutscht aber NICHT ab. Ein Block
+	         ## behaelt so seine Form und stapelt sich in Saeulen, statt zu
+	         ## einem Kegel zu zerlaufen (Eis).
 	POWDER,  ## Faellt entlang der Gravitation und rutscht diagonal ab (Sand, Stein).
 	LIQUID,  ## Wie POWDER, breitet sich zusaetzlich senkrecht zur Gravitation aus.
 	GAS,     ## Wie LIQUID, aber ENTGEGEN der Gravitation (Auftrieb).
@@ -100,24 +102,6 @@ enum Phase {
 @export var emit_celsius: float = 20.0
 @export_range(0.0, 1.0, 0.01) var emit_power: float = 0.0
 
-@export_group("Gravitationsfeld")
-
-## Zellen mit einem Radius groesser 0 strahlen ein Gravitationsfeld ab.
-@export_range(0, 256) var gravity_radius: int = 0
-
-## Multiplikativ: 0 blockt die Schwerkraft, 3 verstaerkt sie, -1 kehrt sie um.
-@export var gravity_factor: float = 1.0
-
-## Anteil des Radius mit voller Wirkung. Ohne Plateau waere ein rein linearer
-## Abfall irrefuehrend: bei Faktor 0 waechst der Gravitationsbetrag dann wie
-## Distanz/Radius, ein "Blocker" mit Radius 44 haette also nur rund drei Zellen
-## echte Wirkung. Mit Plateau wirkt das Feld voll bis Plateau * Radius und rampt
-## erst danach auf die Grundgravitation zurueck.
-@export_range(0.0, 0.95, 0.01) var gravity_plateau: float = 0.65
-
-## Additiver Anteil, z.B. fuer seitlichen "Wind".
-@export var gravity_offset: Vector2 = Vector2.ZERO
-
 ## Laufzeit-id: die Position in [member MaterialLibrary.materials]. Wird von
 ## [method MaterialLibrary.resolve] gesetzt und ist bewusst nicht exportiert -
 ## niemand soll ids von Hand vergeben muessen.
@@ -125,7 +109,16 @@ var id: int = 0
 
 
 ## Faellt, rutscht oder steigt dieses Material ueberhaupt?
+##
+## Ob es sich TATSAECHLICH bewegt, entscheidet zusaetzlich das Static-Flag der
+## einzelnen Zelle. Nur die Luft ist grundsaetzlich unbeweglich.
 func is_movable() -> bool:
+	return phase != Phase.EMPTY
+
+
+## Rutscht dieses Material diagonal ab? Das ist der Unterschied zwischen einem
+## Schuettkegel und einem Stapel: Pulver und Fluide tun es, ein Feststoff nicht.
+func slides_diagonally() -> bool:
 	return phase == Phase.POWDER or phase == Phase.LIQUID or phase == Phase.GAS
 
 
@@ -139,6 +132,3 @@ func is_fluid() -> bool:
 func is_gas() -> bool:
 	return phase == Phase.GAS
 
-
-func is_gravity_source() -> bool:
-	return gravity_radius > 0

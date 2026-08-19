@@ -1,16 +1,22 @@
 class_name WorldView
 extends TextureRect
 
-## Zeigt das Bild des Spiel-SubViewports im Fenster an - GANZZAHLIG
-## hochskaliert und zentriert.
+## Zeigt das Bild des Spiel-SubViewports an - GANZZAHLIG hochskaliert und
+## zentriert.
 ##
-## ZWEI GETRENNTE AUFLOESUNGEN:
-## [br]- Die Spielwelt rendert in einen SubViewport mit der Aufloesung aus den
-##   Projekteinstellungen (Anzeige > Fenster > Groesse) und wird davon nur
-##   ganzzahlig vergroessert. Nur ganzzahlig: jeder andere Faktor verteilt
-##   Weltpixel ungleich auf Bildschirmpixel und macht das Bild unruhig.
-## [br]- Die UI liegt darueber in der nativen Fensteraufloesung und wird gar
-##   nicht skaliert. Deshalb ist der Text scharf statt hochgerechnet.
+## ZWEI GETRENNTE AUFLOESUNGEN, beide Pixelart:
+## [br]- Die SPIELWELT rendert in einen SubViewport mit [member level_resolution]
+##   (320x180) und wird hier ganzzahlig vergroessert. Das ist die groebere der
+##   beiden Stufen.
+## [br]- Die UI liegt darueber im Root-Viewport, dessen Aufloesung in den
+##   Projekteinstellungen steht (640x360). Godot skaliert diesen ganzen Viewport
+##   danach noch einmal aufs Fenster - Stretch-Modus "viewport". Die UI ist
+##   damit ebenfalls Pixelart, aber doppelt so fein wie das Level, und die
+##   Schrift bleibt scharf, weil sie bei 640x360 gerastert und nur noch
+##   ganzzahlig vergroessert wird.
+##
+## Nur ganzzahlige Faktoren: jeder andere verteilt Weltpixel ungleich auf
+## Bildpunkte und macht das Bild unruhig.
 ##
 ## Ausserdem die Umrechnung Fensterkoordinate -> Weltzelle, die alle
 ## Werkzeuge brauchen.
@@ -19,9 +25,6 @@ extends TextureRect
 ## Spielflaeche liegt.
 const OUTSIDE := Vector2i(-99999, -99999)
 
-const SETTING_VIEW_WIDTH := "display/window/size/viewport_width"
-const SETTING_VIEW_HEIGHT := "display/window/size/viewport_height"
-
 @export_group("Verdrahtung")
 
 ## Der SubViewport, in den die Spielwelt rendert. Im Editor zuweisen.
@@ -29,12 +32,14 @@ const SETTING_VIEW_HEIGHT := "display/window/size/viewport_height"
 
 @export_group("Aufloesung")
 
-## Die Aufloesung der Spielwelt aus den Projekteinstellungen uebernehmen. So
-## steht die Fenster- und Ansichtsgroesse an genau einer Stelle.
-@export var use_project_settings := true
-
-## Wird nur benutzt, wenn [member use_project_settings] aus ist.
-@export var view_size_override := Vector2i(576, 324)
+## Wie viele Weltzellen die Spielansicht zeigt. Bewusst NICHT aus den
+## Projekteinstellungen: die beschreiben den Root-Viewport und damit die UI,
+## und das Level soll ja ausdruecklich groeber sein.
+##
+## Sinnvoll ist ein ganzzahliger Teiler der UI-Aufloesung - bei 640x360 also
+## 320x180 (Faktor 2) oder 160x90 (Faktor 4). Sonst bleibt am Rand ein
+## schwarzer Streifen stehen.
+@export var level_resolution := Vector2i(320, 180)
 
 ## Aktueller ganzzahliger Vergroesserungsfaktor.
 var scale_factor: int = 1
@@ -59,14 +64,12 @@ func _ready() -> void:
 
 ## Die interne Aufloesung der Spielwelt in Zellen.
 func view_resolution() -> Vector2i:
-	if not use_project_settings:
-		return view_size_override
-	return Vector2i(
-		ProjectSettings.get_setting(SETTING_VIEW_WIDTH, view_size_override.x),
-		ProjectSettings.get_setting(SETTING_VIEW_HEIGHT, view_size_override.y))
+	return level_resolution
 
 
-## Groesster ganzzahliger Faktor, mit dem die Ansicht noch ins Fenster passt.
+## Groesster ganzzahliger Faktor, mit dem die Ansicht noch in den Root-Viewport
+## passt. Bezugsgroesse ist der Root-Viewport, nicht das Fenster: Godot
+## skaliert diesen danach noch einmal ganzzahlig aufs Fenster.
 func relayout() -> void:
 	var window_size := get_viewport().get_visible_rect().size
 	var resolution := Vector2(world_viewport.size)

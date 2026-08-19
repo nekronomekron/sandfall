@@ -6,7 +6,8 @@ extends Node2D
 ## verarbeitet die Tastenkuerzel.
 ##
 ## Startparameter (jeweils nach `--`) landen bei [SelfTests]:
-## [br]  --bench --fsmtest --flowtest --leveltest --displacetest --inputtest
+## [br]  --bench --fsmtest --flowtest --leveltest --displacetest --gravitytest
+## [br]  --inputtest
 ## [br]  --shot [--frames=N]
 
 @export_group("Verdrahtung")
@@ -80,8 +81,6 @@ func _unhandled_input(event: InputEvent) -> void:
 		step_once()
 	elif event.is_action_pressed(&"reset"):
 		reset_world()
-	elif event.is_action_pressed(&"toggle_heat"):
-		renderer.show_heat = not renderer.show_heat
 
 
 func _handle_mouse_button(button: InputEvent) -> void:

@@ -1,35 +1,28 @@
-[gd_resource type="Resource" script_class="SandMaterial" load_steps=5 format=3]
+[gd_resource type="Resource" script_class="SandMaterial" format=3 uid="uid://buj0gi8t6vp6n"]
 
-[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="1_material"]
-[ext_resource type="Script" path="res://scripts/materials/material_transition.gd" id="2_transition"]
+[ext_resource type="Script" uid="uid://dbd23dfwelp7h" path="res://scripts/materials/sand_material.gd" id="1_material"]
+[ext_resource type="Script" uid="uid://c6fdkymhlgke3" path="res://scripts/materials/material_transition.gd" id="2_transition"]
 
-[sub_resource type="Resource" script_class="MaterialTransition" id="Freeze"]
+[sub_resource type="Resource" id="Freeze"]
 script = ExtResource("2_transition")
 trigger = 1
 threshold_celsius = 0.0
 becomes = &"ice"
-resets_temperature = false
 
-[sub_resource type="Resource" script_class="MaterialTransition" id="Boil"]
+[sub_resource type="Resource" id="Boil"]
 script = ExtResource("2_transition")
-trigger = 0
-threshold_celsius = 100.0
 becomes = &"steam"
-resets_temperature = false
 
 [resource]
 script = ExtResource("1_material")
 material_name = &"water"
 display_name = "Wasser"
-selectable = true
 color = Color(0.16, 0.42, 0.85, 1)
 grain = 0.04
 phase = 3
 density = 1000.0
-dispersion = 5
+dispersion = 1
 friction = 0.05
-starts_static = false
 conductivity = 0.13
 heat_capacity = 2.5
-default_celsius = 20.0
 transitions = Array[ExtResource("2_transition")]([SubResource("Freeze"), SubResource("Boil")])

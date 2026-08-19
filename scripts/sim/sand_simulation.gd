@@ -2,15 +2,18 @@ class_name SandSimulation
 extends Node
 
 ## Der Simulationsschritt als Knoten in der Szene. Reihenfolge pro Frame:
-## [br]1. Gravitationsfeld neu backen, falls sich eine Quelle geaendert hat
-## [br]2. Waermeleitung samt Aggregatzustands-FSM (nur thermisch aktive Chunks)
-## [br]3. Bewegungs-FSM (nur wache Chunks)
+## [br]1. Waermeleitung samt Aggregatzustands-FSM (nur thermisch aktive Chunks)
+## [br]2. Bewegungs-FSM (nur wache Chunks)
+##
+## Das Gravitationsfeld ist statisch: es wird beim Aufbau des Levels gesetzt
+## (siehe [method CellGrid.set_gravity_area]) und pro Frame nur gelesen.
 ##
 ## RICHTUNGSUNABHAENGIGKEIT: Klassische Falling-Sand-Simulationen verlassen
 ## sich darauf, dass die Scanreihenfolge der Gravitationsrichtung entspricht.
-## Das faellt aus, sobald die Gravitation regional umgekehrt oder blockiert ist.
-## Stattdessen traegt jede Zelle einen Generationsstempel: sie wird pro Frame
-## hoechstens einmal bewegt, egal in welcher Reihenfolge sie besucht wird.
+## Das faellt aus, sobald die Gravitation innerhalb der Karte umgekehrt oder
+## aufgehoben ist. Stattdessen traegt jede Zelle einen Generationsstempel: sie
+## wird pro Frame hoechstens einmal bewegt, egal in welcher Reihenfolge sie
+## besucht wird.
 ##
 ## PERFORMANCE: Materialeigenschaften kommen aus [MaterialLookups], nicht aus
 ## Property-Zugriffen auf die [SandMaterial]-Resource - die liegen hier im
@@ -52,9 +55,6 @@ const GENERATION_WRAP := 250
 ## Woher Materialien und Lookups kommen. Im Editor zuweisen.
 @export var registry: MaterialRegistry
 
-## Backt das Gravitationsfeld. Im Editor zuweisen (ueblicherweise ein Kindknoten).
-@export var gravity_field: GravityField
-
 @export_group("Welt")
 
 ## Groesse der Welt in Zellen. Der sichtbare Ausschnitt ist deutlich kleiner -
@@ -66,6 +66,11 @@ const GENERATION_WRAP := 250
 
 ## Umgebungstemperatur, gegen die alles langsam ausgleicht.
 @export var ambient_celsius := 20.0
+
+## Die Schwerkraft, die ueberall gilt, wo das Level nichts anderes vorgibt.
+## Einzelne Bereiche kann ein Level davon abweichen lassen, siehe
+## [method CellGrid.set_gravity_area].
+@export var base_gravity := Vector2.DOWN
 
 @export_group("Feinabstimmung")
 
@@ -84,13 +89,28 @@ const GENERATION_WRAP := 250
 ## aktiv. Darunter schlaeft er ein.
 @export_range(0.0, 5.0, 0.05) var heat_settled_below := 0.35
 
+## Startwert des Zufallsgenerators. 0 heisst: bei jedem Start neu wuerfeln.
+##
+## Die Simulation wuerfelt an mehreren Stellen - welche Diagonale zuerst
+## probiert wird, welche Seite eine Fluessigkeit zuerst nimmt, ob eine ruhende
+## Zelle mitgerissen wird. Fuer den Benchmark ist das Gift: zwei Laeufe
+## derselben Szene unterschieden sich um mehr als das, was eine Optimierung
+## ausmacht. Die Selbsttests setzen deshalb einen festen Wert.
+@export var rng_seed := 0
+
 var grid: CellGrid
 
 # --- Statistik fuer das HUD --------------------------------------------------
 var last_step_usec: int = 0
 var stat_awake_chunks: int = 0
+## Chunks, die der Waermepass tatsaechlich durchgerechnet hat. Der wichtigste
+## Hebel bei heissen Szenen: dieser Pass laeuft ueber die VOLLE Flaeche jedes
+## betroffenen Chunks, anders als die Bewegung hat er kein Dirty-Rect.
+var stat_heat_chunks: int = 0
+## Zellen, die der Waermepass tatsaechlich durchgerechnet hat. Aussagekraeftiger
+## als die Chunkzahl, seit der Pass ein Dirty-Rect hat.
+var stat_heat_cells: int = 0
 var stat_moved: int = 0
-var stat_gravity_usec: int = 0
 var stat_heat_usec: int = 0
 var stat_move_usec: int = 0
 
@@ -104,6 +124,7 @@ var _lookups: MaterialLookups
 ## Schleifenkern der Bewegung und der Waermeleitung macht das gemessen rund
 ## 40 Prozent aus, deshalb steht es hier ausgeschrieben.
 var _movable: PackedByteArray
+var _slides: PackedByteArray
 var _is_gas: PackedByteArray
 var _is_fluid: PackedByteArray
 var _density: PackedFloat32Array
@@ -111,7 +132,6 @@ var _dispersion: PackedByteArray
 var _friction_u8: PackedByteArray
 var _change_budget: PackedByteArray
 var _starts_static: PackedByteArray
-var _is_gravity_source: PackedByteArray
 var _heat_transfer: PackedFloat32Array
 var _ambient_pull: PackedFloat32Array
 var _emits_heat: PackedByteArray
@@ -135,6 +155,11 @@ var _frame: int = 0
 ## Scanrichtung jeden Frame spiegeln, damit sich keine Drift nach einer Seite
 ## einschleicht.
 var _scan_reversed: bool = false
+
+## Wurde im laufenden [method _update_cell] ein Weg NUR deshalb abgelehnt, weil
+## die Zielzelle in diesem Frame schon bewegt wurde? Dann ist die Zelle nicht
+## zur Ruhe gekommen, sondern nur aufgeschoben - siehe dort.
+var _deferred: bool = false
 
 # Bewusst PackedInt32Array statt Array[Vector2i]: das Indizieren eines
 # typisierten Arrays liefert eine Variant und kostet im Schleifenkern spuerbar
@@ -163,9 +188,12 @@ func create_world() -> void:
 	assert(registry != null, "SandSimulation braucht eine MaterialRegistry.")
 	registry.build()
 	_lookups = registry.lookups
-	_rng.randomize()
+	if rng_seed == 0:
+		_rng.randomize()
+	else:
+		_rng.seed = rng_seed
 
-	grid = CellGrid.new(world_size, chunk_size, _lookups, ambient_celsius)
+	grid = CellGrid.new(world_size, chunk_size, _lookups, ambient_celsius, base_gravity)
 	_width = grid.width
 	_height = grid.height
 	_cache_lookups()
@@ -178,6 +206,7 @@ func create_world() -> void:
 ## Holt die Lookup-Arrays unter kurze Namen, siehe deren Deklaration.
 func _cache_lookups() -> void:
 	_movable = _lookups.movable
+	_slides = _lookups.slides
 	_is_gas = _lookups.is_gas
 	_is_fluid = _lookups.is_fluid
 	_density = _lookups.density
@@ -185,7 +214,6 @@ func _cache_lookups() -> void:
 	_friction_u8 = _lookups.friction_u8
 	_change_budget = _lookups.direction_change_budget
 	_starts_static = _lookups.starts_static
-	_is_gravity_source = _lookups.is_gravity_source
 	_heat_transfer = _lookups.heat_transfer
 	_ambient_pull = _lookups.ambient_pull
 	_emits_heat = _lookups.emits_heat
@@ -200,11 +228,10 @@ func _cache_lookups() -> void:
 	_transition_result = _lookups.transition_result
 
 
-## Leert die Welt und das Gravitationsfeld.
+## Leert die Welt. Das Gravitationsfeld faellt dabei auf [member base_gravity]
+## zurueck - ein Level setzt seine Abweichungen beim Aufbau neu.
 func reset() -> void:
 	grid.clear()
-	if gravity_field != null:
-		gravity_field.reset()
 
 
 ## Ein Simulationsschritt.
@@ -213,14 +240,13 @@ func step() -> void:
 	_frame += 1
 	_generation = (_generation % GENERATION_WRAP) + 1
 	stat_moved = 0
-	stat_gravity_usec = 0
 	stat_heat_usec = 0
-
-	if grid.gravity_dirty and gravity_field != null:
-		var gravity_started := Time.get_ticks_usec()
-		gravity_field.rebuild(grid, registry.library)
-		grid.gravity_dirty = false
-		stat_gravity_usec = Time.get_ticks_usec() - gravity_started
+	# Muss hier stehen und nicht im Waermepass: der laeuft nur jeden n-ten
+	# Frame, sonst bliebe der Zaehler dazwischen auf seinem alten Wert stehen
+	# und die Mittelwerte im Benchmark waeren nicht mehr mit den Millisekunden
+	# vergleichbar.
+	stat_heat_chunks = 0
+	stat_heat_cells = 0
 
 	if _frame % heat_interval == 0:
 		var heat_started := Time.get_ticks_usec()
@@ -337,7 +363,7 @@ func _update_cell(x: int, y: int, cell: int, material: int) -> void:
 		strength = sqrt(gravity_x * gravity_x + gravity_y * gravity_y)
 
 	if strength < weightless_below:
-		# Schwerelos, etwa im Radius eines Grav-Blockers.
+		# Schwerelos - das Level gibt hier kein Feld vor.
 		grid.move_state[cell] = CellGrid.MoveState.REST
 		return
 
@@ -346,7 +372,8 @@ func _update_cell(x: int, y: int, cell: int, material: int) -> void:
 
 	if _try_fall(x, y, cell, direction, steps, density, rising):
 		return
-	if _try_slide_diagonally(x, y, cell, direction, density, rising):
+	# Feststoffe fallen, rutschen aber nicht ab - sie behalten ihre Form.
+	if _slides[material] == 1 and _try_slide_diagonally(x, y, cell, direction, density, rising):
 		return
 	if _try_spread_sideways(x, y, cell, material, direction, density, rising):
 		return
@@ -552,8 +579,8 @@ func _commit(cell: int, x: int, y: int, target_x: int, target_y: int,
 	var moved_flags := flags[cell]
 	var moved_celsius := temperatures[cell]
 	var swapped_flags := flags[target]
-	var swapped_celsius := temperatures[target]
 	var swapped_settle := settles[target]
+	var swapped_celsius := temperatures[target]
 
 	materials[target] = material
 	flags[target] = moved_flags
@@ -570,12 +597,6 @@ func _commit(cell: int, x: int, y: int, target_x: int, target_y: int,
 	states[cell] = CellGrid.MoveState.REST if left_empty else CellGrid.MoveState.FALLING
 	generations[cell] = generation
 
-	# Bewegliche Gravitationsquellen: Registrierung mitfuehren, Feld neu backen.
-	if _is_gravity_source[material] == 1:
-		grid.move_gravity_source(cell, target)
-	if not left_empty and _is_gravity_source[occupant] == 1:
-		grid.move_gravity_source(target, cell)
-
 	# BEIDE Endpunkte wecken, auch innerhalb desselben Chunks. Das Dirty-Rect
 	# ist eine Bounding-Box: nur die Quelle einzutragen laesst das Ziel
 	# ausserhalb liegen, sobald der Schritt weiter als die Ein-Zellen-Marge
@@ -584,10 +605,26 @@ func _commit(cell: int, x: int, y: int, target_x: int, target_y: int,
 	grid.wake_at(x, y)
 	grid.wake_at(target_x, target_y)
 
-	# Nur wenn wirklich ein Loch entstanden ist - bei einer Verdraengung hat
-	# sich an der Unterlage der Nachbarn nichts geaendert.
-	if left_empty:
-		_wake_all_neighbours(x, y, target)
+	# Eine warme Zelle nimmt ihre Waerme mit, wenn sie sich bewegt. Ohne
+	# diese Meldung liefe sie aus dem Dirty-Rect des Waermepasses heraus
+	# und waere thermisch unsichtbar: das Rechteck waechst pro Durchlauf
+	# um eine Zelle, fallende Lava legt in derselben Zeit mehrere zurueck.
+	# Sie hoerte dann auf zu heizen, und Dampf wie Lava blieben auf einem
+	# festen Stand stehen, statt zu kondensieren und zu erstarren.
+	var ambient := grid.ambient_celsius
+	if absf(moved_celsius - ambient) > heat_settled_below:
+		grid.mark_heat_at(target_x, target_y)
+	if not left_empty and absf(swapped_celsius - ambient) > heat_settled_below:
+		grid.mark_heat_at(x, y)
+
+	# Die Nachbarn der verlassenen Stelle sehen jetzt einen anderen Inhalt und
+	# muessen neu bewerten - AUCH bei einer Verdraengung. Frueher lief das nur,
+	# wenn ein Loch entstand, mit der Begruendung, die Unterlage habe sich ja
+	# nicht geaendert. Das stimmt fuer die Traglast, aber nicht fuer die
+	# Verdraengbarkeit: ueber einer Zelle, in die gerade Wasser hochgestiegen
+	# ist, kann Sand jetzt absinken, wo vorher Sand lag. Ohne diesen Weckruf
+	# blieb ein Sandblock als Floss auf dem Wasser liegen.
+	_wake_all_neighbours(x, y, target)
 	# Am Ziel zieht die vorbeigekommene Zelle an den ruhenden Zellen NEBEN ihrer
 	# Bahn. Ob die mitgehen, entscheidet ihre Reibung.
 	_entrain(target_x, target_y, direction)
@@ -671,6 +708,12 @@ func _step_heat() -> void:
 		return
 
 	# Doppelpuffer: die Leitung muss vom Zustand des letzten Schritts lesen.
+	#
+	# Bewusst eine frische Kopie und kein wiederverwendeter Puffer: der Pass
+	# schreibt nur innerhalb seiner Dirty-Rects, ein wiederverwendeter Puffer
+	# truege ueberall sonst Temperaturen von vorletzten Durchlauf. Die Kopie
+	# kostet gemessen rund ein Prozent des Passes - das ist der Preis dafuer,
+	# dass ausserhalb der warmen Bereiche garantiert die richtigen Werte stehen.
 	var source := grid.celsius
 	var destination := source.duplicate()
 	var materials := grid.material_id
@@ -696,11 +739,32 @@ func _step_heat() -> void:
 			var chunk := chunk_y * grid.chunks_x + chunk_x
 			if grid.chunk_needs_heat[chunk] == 0:
 				continue
-			var left := chunk_x * grid.chunk_size
-			var top := chunk_y * grid.chunk_size
-			var right := mini(left + grid.chunk_size, width)
-			var bottom := mini(top + grid.chunk_size, height)
-			var still_hot := false
+			var base := chunk * CellGrid.BOUNDS_STRIDE
+			var warm_left := grid.heat_bounds[base]
+			var warm_top := grid.heat_bounds[base + 1]
+			var warm_right := grid.heat_bounds[base + 2]
+			var warm_bottom := grid.heat_bounds[base + 3]
+			if warm_left > warm_right or warm_top > warm_bottom:
+				grid.clear_heat(chunk)
+				continue
+
+			# Eine Zelle Rand: weiter als bis dahin kann Waerme seit dem
+			# letzten Durchlauf nicht gewandert sein.
+			var chunk_left := chunk_x * grid.chunk_size
+			var chunk_top := chunk_y * grid.chunk_size
+			var left := maxi(warm_left - 1, chunk_left)
+			var top := maxi(warm_top - 1, chunk_top)
+			var right := mini(warm_right + 2, mini(chunk_left + grid.chunk_size, width))
+			var bottom := mini(warm_bottom + 2, mini(chunk_top + grid.chunk_size, height))
+
+			# Das Rechteck fuer den naechsten Durchlauf entsteht waehrend der
+			# Rechnung neu, aus den Zellen die dann noch warm sind.
+			var hot_left := CellGrid.BOUNDS_EMPTY_MIN
+			var hot_top := CellGrid.BOUNDS_EMPTY_MIN
+			var hot_right := CellGrid.BOUNDS_EMPTY_MAX
+			var hot_bottom := CellGrid.BOUNDS_EMPTY_MAX
+			stat_heat_chunks += 1
+			stat_heat_cells += (right - left) * (bottom - top)
 
 			for y in range(top, bottom):
 				var row := y * width
@@ -755,22 +819,32 @@ func _step_heat() -> void:
 						transition += 1
 
 					if absf(updated - ambient) > settled_below:
-						still_hot = true
-						# Waerme wandert ueber Chunkgrenzen.
-						if x == left:
-							grid.mark_heat_chunk(chunk_x - 1, chunk_y)
+						if x < hot_left:
+							hot_left = x
+						if y < hot_top:
+							hot_top = y
+						if x > hot_right:
+							hot_right = x
+						if y > hot_bottom:
+							hot_bottom = y
+						# Waerme wandert ueber Chunkgrenzen - dort zellgenau
+						# vormerken, nicht den ganzen Nachbarchunk.
+						if x == chunk_left:
+							grid.mark_heat_cell(x - 1, y)
 						elif x == right - 1:
-							grid.mark_heat_chunk(chunk_x + 1, chunk_y)
-						if y == top:
-							grid.mark_heat_chunk(chunk_x, chunk_y - 1)
+							grid.mark_heat_cell(x + 1, y)
+						if y == chunk_top:
+							grid.mark_heat_cell(x, y - 1)
 						elif y == bottom - 1:
-							grid.mark_heat_chunk(chunk_x, chunk_y + 1)
+							grid.mark_heat_cell(x, y + 1)
 
-			if still_hot:
-				# Die Temperatur faerbt den ganzen Chunk, nicht nur einzelne Zellen.
-				grid.mark_redraw_full(chunk)
+			# Ein Waermeschritt allein aendert nichts mehr am Bild, seit die
+			# Waermetoenung weg ist - nur ein Materialwechsel tut das, und der
+			# weckt seine Zelle ohnehin selbst.
+			if hot_left > hot_right:
+				grid.clear_heat(chunk)
 			else:
-				grid.chunk_needs_heat[chunk] = 0
+				grid.set_heat_bounds(chunk, hot_left, hot_top, hot_right, hot_bottom)
 
 	grid.celsius = destination
 
@@ -783,7 +857,6 @@ func _any_chunk_needs_heat() -> bool:
 
 
 func _transition_cell(cell: int, x: int, y: int, target_material: int) -> void:
-	var previous := grid.material_id[cell]
 	grid.material_id[cell] = target_material
 
 	# Statisch bleibt nur, was vorher statisch war UND dessen neues Material
@@ -799,12 +872,4 @@ func _transition_cell(cell: int, x: int, y: int, target_material: int) -> void:
 	# Aus einem Feststoff kann eine Fluessigkeit geworden sein oder umgekehrt.
 	# Ruhende Nachbarn muessen ihre Lage neu bewerten.
 	_wake_all_neighbours(x, y, -1)
-
-	if _is_gravity_source[previous] != _is_gravity_source[target_material]:
-		if _is_gravity_source[target_material] == 1:
-			grid.gravity_sources[cell] = true
-		else:
-			grid.gravity_sources.erase(cell)
-		grid.gravity_dirty = true
-
 	grid.wake_at(x, y)

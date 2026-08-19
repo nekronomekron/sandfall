@@ -16,7 +16,7 @@ extends Label
 @export_group("Text")
 
 ## Zweite Zeile, solange die Maus nicht ueber der Spielflaeche ist.
-@export_multiline var controls_hint := "LMB malen   RMB radieren   MMB/WASD schieben   Mausrad Zoom   Leertaste Pause   N Schritt   H Waerme"
+@export_multiline var controls_hint := "LMB malen   RMB radieren   MMB/WASD schieben   Mausrad Zoom   Leertaste Pause   N Schritt"
 
 ## Wird von [Main] gesetzt.
 var paused: bool = false

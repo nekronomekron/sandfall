@@ -1,18 +1,15 @@
-[gd_resource type="Resource" script_class="MaterialLibrary" load_steps=12 format=3]
+[gd_resource type="Resource" script_class="MaterialLibrary" format=3 uid="uid://b7c62u4vwl4fs"]
 
-[ext_resource type="Script" path="res://scripts/materials/material_library.gd" id="1_library"]
-[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="2_material"]
+[ext_resource type="Script" uid="uid://cbfg7ua4ckbkp" path="res://scripts/materials/material_library.gd" id="1_library"]
+[ext_resource type="Script" uid="uid://dbd23dfwelp7h" path="res://scripts/materials/sand_material.gd" id="2_material"]
 [ext_resource type="Resource" path="res://resources/materials/air.tres" id="3_air"]
 [ext_resource type="Resource" path="res://resources/materials/sand.tres" id="4_sand"]
-[ext_resource type="Resource" path="res://resources/materials/water.tres" id="5_water"]
-[ext_resource type="Resource" path="res://resources/materials/stone.tres" id="6_stone"]
-[ext_resource type="Resource" path="res://resources/materials/ice.tres" id="7_ice"]
-[ext_resource type="Resource" path="res://resources/materials/steam.tres" id="8_steam"]
-[ext_resource type="Resource" path="res://resources/materials/lava.tres" id="9_lava"]
-[ext_resource type="Resource" path="res://resources/materials/gravity_blocker.tres" id="10_gblock"]
-[ext_resource type="Resource" path="res://resources/materials/gravity_booster.tres" id="11_gboost"]
-[ext_resource type="Resource" path="res://resources/materials/gravity_inverter.tres" id="12_ginvert"]
+[ext_resource type="Resource" uid="uid://buj0gi8t6vp6n" path="res://resources/materials/water.tres" id="5_water"]
+[ext_resource type="Resource" uid="uid://dp62drkinrrpv" path="res://resources/materials/stone.tres" id="6_stone"]
+[ext_resource type="Resource" uid="uid://cj7xy1m0ievoa" path="res://resources/materials/ice.tres" id="7_ice"]
+[ext_resource type="Resource" uid="uid://bhip1sjrxf52s" path="res://resources/materials/steam.tres" id="8_steam"]
+[ext_resource type="Resource" uid="uid://k6inc5klmifc" path="res://resources/materials/lava.tres" id="9_lava"]
 
 [resource]
 script = ExtResource("1_library")
-materials = Array[ExtResource("2_material")]([ExtResource("3_air"), ExtResource("4_sand"), ExtResource("5_water"), ExtResource("6_stone"), ExtResource("7_ice"), ExtResource("8_steam"), ExtResource("9_lava"), ExtResource("10_gblock"), ExtResource("11_gboost"), ExtResource("12_ginvert")])
+materials = Array[ExtResource("2_material")]([ExtResource("3_air"), ExtResource("4_sand"), ExtResource("5_water"), ExtResource("6_stone"), ExtResource("7_ice"), ExtResource("8_steam"), ExtResource("9_lava")])

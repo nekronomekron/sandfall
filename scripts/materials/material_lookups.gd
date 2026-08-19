@@ -31,6 +31,8 @@ const DIRECTION_CHANGE_LIMIT := 0x3F
 
 # --- Physik ------------------------------------------------------------------
 var movable: PackedByteArray
+## Rutscht diagonal ab. Feststoffe nicht - die stapeln sich in Saeulen.
+var slides: PackedByteArray
 var is_gas: PackedByteArray
 ## Fluessigkeit oder Gas. Entscheidet, WER verdraengt werden darf.
 var is_fluid: PackedByteArray
@@ -64,9 +66,6 @@ var transition_target: PackedInt32Array
 var transition_resets_temperature: PackedByteArray
 var transition_result: PackedFloat32Array
 
-# --- Gravitationsfeld --------------------------------------------------------
-var is_gravity_source: PackedByteArray
-
 # --- Renderer ----------------------------------------------------------------
 var color_red: PackedFloat32Array
 var color_green: PackedFloat32Array
@@ -84,6 +83,7 @@ func build(library: MaterialLibrary) -> void:
 	for id in count:
 		var material := library.get_material(id)
 		movable[id] = 1 if material.is_movable() else 0
+		slides[id] = 1 if material.slides_diagonally() else 0
 		is_gas[id] = 1 if material.is_gas() else 0
 		is_fluid[id] = 1 if material.is_fluid() else 0
 		density[id] = material.density
@@ -104,8 +104,6 @@ func build(library: MaterialLibrary) -> void:
 		transition_start[id] = flat_transitions.size()
 		transition_count[id] = material.transitions.size()
 		flat_transitions.append_array(material.transitions)
-
-		is_gravity_source[id] = 1 if material.is_gravity_source() else 0
 
 		color_red[id] = material.color.r
 		color_green[id] = material.color.g
@@ -140,6 +138,7 @@ func _flatten_transitions(flat_transitions: Array[MaterialTransition]) -> void:
 
 func _resize_all(count: int) -> void:
 	movable.resize(count)
+	slides.resize(count)
 	is_gas.resize(count)
 	is_fluid.resize(count)
 	density.resize(count)
@@ -155,7 +154,6 @@ func _resize_all(count: int) -> void:
 	emit_power.resize(count)
 	transition_start.resize(count)
 	transition_count.resize(count)
-	is_gravity_source.resize(count)
 	color_red.resize(count)
 	color_green.resize(count)
 	color_blue.resize(count)

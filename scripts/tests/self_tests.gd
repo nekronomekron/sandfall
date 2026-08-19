@@ -30,6 +30,10 @@ static func take_over(main: Main) -> bool:
 		return _run_headless(main, LevelTest.run)
 	if _has(arguments, "--displacetest"):
 		return _run_headless(main, DisplacementTest.run)
+	if _has(arguments, "--gravitytest"):
+		return _run_headless(main, GravityTest.run)
+	if _has(arguments, "--regressiontest"):
+		return _run_headless(main, RegressionTest.run)
 
 	if _has(arguments, "--inputtest"):
 		main.add_child(InputTest.new(main))

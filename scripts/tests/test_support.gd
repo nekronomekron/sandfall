@@ -11,6 +11,10 @@ extends RefCounted
 const DEFAULT_WORLD_SIZE := Vector2i(1024, 576)
 const LIBRARY_PATH := "res://resources/material_library.tres"
 
+## Fester Startwert fuer den Zufallsgenerator. Ohne ihn streuen die Messwerte
+## des Benchmarks staerker als die Unterschiede, die er zeigen soll.
+const RNG_SEED := 20260819
+
 var simulation: SandSimulation
 var registry: MaterialRegistry
 var grid: CellGrid
@@ -23,7 +27,6 @@ var stone: int
 var ice: int
 var steam: int
 var lava: int
-var gravity_inverter: int
 
 
 ## Baut eine frische Simulation unter [param host] auf. [param host] muss im
@@ -34,15 +37,11 @@ func _init(host: Node, world_size := DEFAULT_WORLD_SIZE) -> void:
 	registry.library = load(LIBRARY_PATH)
 	registry.build()
 
-	var gravity_field := GravityField.new()
-	gravity_field.name = "GravityField"
-
 	simulation = SandSimulation.new()
 	simulation.name = "TestSimulation"
 	simulation.registry = registry
-	simulation.gravity_field = gravity_field
 	simulation.world_size = world_size
-	simulation.add_child(gravity_field)
+	simulation.rng_seed = RNG_SEED
 
 	host.add_child(registry)
 	host.add_child(simulation)
@@ -56,12 +55,26 @@ func _init(host: Node, world_size := DEFAULT_WORLD_SIZE) -> void:
 	ice = registry.require_id(&"ice")
 	steam = registry.require_id(&"steam")
 	lava = registry.require_id(&"lava")
-	gravity_inverter = registry.require_id(&"gravity_inverter")
 
 
-## Leert die Welt fuer den naechsten Fall.
+## Legt die Welt mit einem anderen Zufallsstartwert neu an. Damit laesst sich
+## ein Fall ueber mehrere Wuerfe messen, statt ein einzelnes Ergebnis fuer
+## bare Muenze zu nehmen.
+func reseed(value: int) -> void:
+	simulation.rng_seed = value
+	simulation.create_world()
+	grid = simulation.grid
+
+
+## Leert die Welt fuer den naechsten Fall. Das Gravitationsfeld faellt dabei
+## auf die Grundschwerkraft zurueck.
 func reset() -> void:
 	simulation.reset()
+
+
+## Setzt die Schwerkraft in einem Bereich, wie es ein Level beim Aufbau tut.
+func set_gravity(area: Rect2i, vector: Vector2) -> void:
+	grid.set_gravity_area(area, vector)
 
 
 func step(frames: int) -> void:

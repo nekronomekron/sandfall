@@ -3,9 +3,14 @@ extends PanelContainer
 
 ## Materialauswahl und Static-Flag.
 ##
-## Die Toolbar liegt in der nativen Fensteraufloesung, nicht im hochskalierten
-## Spiel-SubViewport. Deshalb darf hier eine normale Schriftgroesse stehen und
-## der Text wird 1:1 gerastert - scharf statt hochskaliert.
+## Die Toolbar liegt im Root-Viewport, nicht im groeberen Spiel-SubViewport.
+## Der ganze Viewport wird danach noch einmal ganzzahlig aufs Fenster
+## vergroessert; die Schrift wird dabei mitvergroessert statt neu gerastert -
+## Pixelart, aber scharf.
+##
+## Die Materialfarbe steckt in einem Farbfeld links neben der Beschriftung,
+## nicht in der Schriftfarbe. Eingefaerbte Schrift war bei dunklen Materialien
+## wie Stein kaum zu lesen.
 ##
 ## Die Knopfliste entsteht zur Laufzeit aus der [MaterialRegistry]: ein neues
 ## Material taucht hier von selbst auf, sobald es in der Bibliothek steht und
@@ -21,13 +26,17 @@ signal reset_pressed()
 
 @export_group("Darstellung")
 
-@export var font_size := 13
+@export var font_size := 12
 
-## Wie stark die Materialfarbe fuer die Beschriftung aufgehellt wird.
-@export_range(0.0, 1.0, 0.05) var label_lightening := 0.3
+## Kantenlaenge des Farbfelds vor der Beschriftung, in UI-Pixeln.
+@export_range(4, 32) var swatch_size := 12
 
-## Beschriftungsfarbe des Radierers, der keine sinnvolle eigene Farbe hat.
-@export var eraser_label_color := Color(0.80, 0.80, 0.83)
+## Beschriftungsfarbe. Bewusst neutral und hell - die Materialfarbe traegt das
+## Farbfeld.
+@export var label_color := Color(0.88, 0.90, 0.94)
+
+## Fuellung des Farbfelds beim Radierer, der keine eigene Farbe hat.
+@export var eraser_swatch_color := Color(0.22, 0.22, 0.26)
 
 ## Welches Material beim Start ausgewaehlt ist.
 @export var default_material := &"sand"
@@ -70,9 +79,11 @@ func _build_material_buttons() -> void:
 		button.text = _label_of(material)
 		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		button.add_theme_font_size_override("font_size", font_size)
-		var colour := _label_colour(material)
-		for state in ["font_color", "font_hover_color", "font_pressed_color"]:
-			button.add_theme_color_override(state, colour)
+		button.icon = _swatch_for(material)
+		button.expand_icon = false
+		for state in ["font_color", "font_hover_color", "font_pressed_color",
+				"font_focus_color", "font_disabled_color"]:
+			button.add_theme_color_override(state, label_color)
 		button.pressed.connect(_apply_selection.bind(id))
 		_material_list.add_child(button)
 		_buttons[id] = button
@@ -83,10 +94,14 @@ func _label_of(material: SandMaterial) -> String:
 		else material.display_name
 
 
-func _label_colour(material: SandMaterial) -> Color:
-	if material.phase == SandMaterial.Phase.EMPTY:
-		return eraser_label_color
-	return material.color.lightened(label_lightening)
+## Ein einfarbiges Quadrat in der Materialfarbe, mit dunklem Rand, damit auch
+## helle Materialien sich vom Knopf abheben.
+func _swatch_for(material: SandMaterial) -> ImageTexture:
+	var fill := eraser_swatch_color if material.phase == SandMaterial.Phase.EMPTY 		else material.color
+	var image := Image.create_empty(swatch_size, swatch_size, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0.08, 0.08, 0.10))
+	image.fill_rect(Rect2i(1, 1, swatch_size - 2, swatch_size - 2), fill)
+	return ImageTexture.create_from_image(image)
 
 
 func _apply_selection(id: int) -> void:

@@ -42,6 +42,9 @@ var chunk_count: int
 
 var ambient_celsius: float
 
+## Die Schwerkraft, die ueberall gilt, wo das Level nichts anderes vorgibt.
+var base_gravity: Vector2
+
 # --- Zell-Arrays -------------------------------------------------------------
 var material_id: PackedByteArray
 var move_state: PackedByteArray
@@ -52,7 +55,15 @@ var move_generation: PackedByteArray
 ## [SandSimulation].
 var settle_state: PackedByteArray
 var celsius: PackedFloat32Array
-## Gecachtes Gravitationsfeld, gebacken von [GravityField].
+## Das Gravitationsfeld, ein Vektor je Zelle. Es ist STATISCH: gesetzt wird es
+## beim Aufbau des Levels ueber [method set_gravity_area], danach ruehrt es
+## niemand mehr an. Es darf sich also innerhalb der Karte unterscheiden - eine
+## Halle mit umgekehrter Schwerkraft, ein schwereloser Schacht - aber es gibt
+## keine Materialien mehr, die zur Laufzeit ein eigenes Feld abstrahlen.
+##
+## Ein voller Vektor je Zelle statt einer Zonenliste, weil der Schleifenkern
+## der Bewegung fuer jede wache Zelle genau einen Zugriff braucht; eine Liste
+## muesste er pro Zelle durchsuchen.
 var gravity: PackedVector2Array
 
 # --- Chunk-Arrays ------------------------------------------------------------
@@ -68,20 +79,24 @@ var chunk_needs_redraw: PackedByteArray ## Pixel muessen neu gezeichnet werden.
 var sim_bounds: PackedInt32Array
 var sim_bounds_next: PackedInt32Array
 
+## Und dasselbe fuer den Waermepass. Waerme wandert pro Durchlauf hoechstens
+## eine Zelle weit (sie leitet nur zu den vier direkten Nachbarn), deshalb ist
+## das Rechteck vom letzten Durchlauf, um eine Zelle erweitert, garantiert eine
+## Obermenge dessen, was jetzt warm sein kann. Ohne dieses Rechteck rechnete
+## der Pass die volle Chunkflaeche durch, auch wenn nur ein paar Zellen heiss
+## waren - bei Lava der groesste Einzelposten.
+var heat_bounds: PackedInt32Array
+
 ## Dasselbe fuer den Renderer. Getrennt vom Simulations-Rechteck, weil der
 ## Renderer in seinem eigenen Takt leert: ein Chunk kann mehrere
 ## Simulationsschritte lang Aenderungen sammeln, bevor gezeichnet wird.
 var redraw_bounds: PackedInt32Array
 
-## Zellindex -> true fuer alle Zellen, die ein Gravitationsfeld abstrahlen.
-## Damit kostet ein Feld-Rebuild O(Quellen) statt O(Weltgroesse).
-var gravity_sources: Dictionary = {}
-var gravity_dirty: bool = true
-
 var _lookups: MaterialLookups
 
 
-func _init(size: Vector2i, chunk_edge: int, lookups: MaterialLookups, ambient: float) -> void:
+func _init(size: Vector2i, chunk_edge: int, lookups: MaterialLookups, ambient: float,
+		gravity_vector := Vector2.DOWN) -> void:
 	width = size.x
 	height = size.y
 	cell_count = width * height
@@ -90,6 +105,7 @@ func _init(size: Vector2i, chunk_edge: int, lookups: MaterialLookups, ambient: f
 	chunks_y = ceili(float(height) / float(chunk_size))
 	chunk_count = chunks_x * chunks_y
 	ambient_celsius = ambient
+	base_gravity = gravity_vector
 	_lookups = lookups
 
 	material_id.resize(cell_count)
@@ -106,6 +122,7 @@ func _init(size: Vector2i, chunk_edge: int, lookups: MaterialLookups, ambient: f
 	chunk_needs_redraw.resize(chunk_count)
 	sim_bounds.resize(chunk_count * BOUNDS_STRIDE)
 	sim_bounds_next.resize(chunk_count * BOUNDS_STRIDE)
+	heat_bounds.resize(chunk_count * BOUNDS_STRIDE)
 	redraw_bounds.resize(chunk_count * BOUNDS_STRIDE)
 
 	clear()
@@ -119,7 +136,7 @@ func clear() -> void:
 	move_generation.fill(0)
 	settle_state.fill(0)
 	celsius.fill(ambient_celsius)
-	gravity.fill(Vector2.DOWN)
+	gravity.fill(base_gravity)
 
 	chunk_awake.fill(1)
 	chunk_awake_next.fill(1)
@@ -128,10 +145,8 @@ func clear() -> void:
 	for chunk in chunk_count:
 		_fill_bounds(sim_bounds, chunk)
 		_fill_bounds(sim_bounds_next, chunk)
+		_fill_bounds(heat_bounds, chunk)
 		_fill_bounds(redraw_bounds, chunk)
-
-	gravity_sources.clear()
-	gravity_dirty = true
 
 # --- Zugriff -----------------------------------------------------------------
 
@@ -151,9 +166,8 @@ func material_at(x: int, y: int) -> int:
 	return material_id[y * width + x]
 
 
-## Setzt eine Zelle mitsamt aller Nebenbuchhaltung: Chunks wecken,
-## Gravitationsquellen registrieren, Nachbarn aufruetteln. Das ist der einzige
-## legitime Schreibpfad von aussen.
+## Setzt eine Zelle mitsamt aller Nebenbuchhaltung: Chunks wecken, Nachbarn
+## aufruetteln. Das ist der einzige legitime Schreibpfad von aussen.
 ##
 ## [param temperature] auf [constant USE_MATERIAL_TEMPERATURE] lassen, um die
 ## Materialvorgabe zu nehmen. So bringt Lava ihre 1200 Grad und Eis seine
@@ -163,15 +177,6 @@ func set_cell(x: int, y: int, new_material: int, make_static: bool,
 	if not in_bounds(x, y):
 		return
 	var cell := y * width + x
-
-	if material_id[cell] != new_material:
-		if gravity_sources.has(cell):
-			gravity_sources.erase(cell)
-			gravity_dirty = true
-		if _lookups.is_gravity_source[new_material] == 1:
-			gravity_sources[cell] = true
-			gravity_dirty = true
-
 	material_id[cell] = new_material
 	cell_flags[cell] = FLAG_STATIC if make_static else 0
 	settle_state[cell] = 0
@@ -191,13 +196,36 @@ func set_cell(x: int, y: int, new_material: int, make_static: bool,
 	wake_neighbours(x, y)
 
 
-## Fuehrt die Registrierung einer Gravitationsquelle mit, wenn ihre Zelle wandert.
-func move_gravity_source(from_cell: int, to_cell: int) -> void:
-	if not gravity_sources.has(from_cell):
+## Setzt die Schwerkraft in einem Rechteck - der Weg, auf dem ein Level sein
+## Gravitationsfeld aufbaut. Gedacht fuer den Aufbau, nicht fuer jeden Frame.
+##
+## Weckt den Bereich mit auf: wo "unten" jetzt woanders liegt, muessen ruhende
+## Zellen ihre Lage neu bewerten, sonst bleiben sie in einer Haltung liegen,
+## die unter dem neuen Feld gar nicht stabil ist.
+func set_gravity_area(area: Rect2i, vector: Vector2) -> void:
+	var left := maxi(area.position.x, 0)
+	var top := maxi(area.position.y, 0)
+	var right := mini(area.end.x - 1, width - 1)
+	var bottom := mini(area.end.y - 1, height - 1)
+	if left > right or top > bottom:
 		return
-	gravity_sources.erase(from_cell)
-	gravity_sources[to_cell] = true
-	gravity_dirty = true
+	for y in range(top, bottom + 1):
+		var row := y * width
+		for x in range(left, right + 1):
+			gravity[row + x] = vector
+
+	wake_region(left, top, right, bottom)
+	for chunk_y in range(top / chunk_size, bottom / chunk_size + 1):
+		for chunk_x in range(left / chunk_size, right / chunk_size + 1):
+			wake_chunk(chunk_x, chunk_y)
+
+
+## Die Schwerkraft an einer Stelle. Bequem, aber langsam - der Schleifenkern
+## indiziert [member gravity] direkt.
+func gravity_at(x: int, y: int) -> Vector2:
+	if not in_bounds(x, y):
+		return base_gravity
+	return gravity[y * width + x]
 
 # --- Chunk-Verwaltung --------------------------------------------------------
 
@@ -231,27 +259,54 @@ func wake_at(x: int, y: int) -> void:
 		_wake_cell(chunk_x, chunk_y + 1, x, y + 1)
 
 
+## Merkt einen ganzen Chunk fuer den Waermepass vor, auf voller Flaeche.
 func mark_heat_chunk(chunk_x: int, chunk_y: int) -> void:
 	if chunk_x < 0 or chunk_y < 0 or chunk_x >= chunks_x or chunk_y >= chunks_y:
 		return
-	chunk_needs_heat[chunk_y * chunks_x + chunk_x] = 1
+	var chunk := chunk_y * chunks_x + chunk_x
+	chunk_needs_heat[chunk] = 1
+	_fill_bounds(heat_bounds, chunk)
 
 
-## Wie [method wake_at], nur fuer den Waermepass.
+## Merkt EINE Zelle fuer den Waermepass vor und zieht das Rechteck ihres Chunks
+## darum auf.
+func mark_heat_cell(x: int, y: int) -> void:
+	if not in_bounds(x, y):
+		return
+	var chunk := (y / chunk_size) * chunks_x + (x / chunk_size)
+	chunk_needs_heat[chunk] = 1
+	_grow_bounds(heat_bounds, chunk, x, y)
+
+
+## Wie [method wake_at], nur fuer den Waermepass: die Zelle selbst und, wenn sie
+## am Chunkrand liegt, die Nachbarzelle jenseits der Grenze.
 func mark_heat_at(x: int, y: int) -> void:
-	var chunk_x := x / chunk_size
-	var chunk_y := y / chunk_size
-	mark_heat_chunk(chunk_x, chunk_y)
+	mark_heat_cell(x, y)
 	var local_x := x % chunk_size
 	var local_y := y % chunk_size
 	if local_x == 0:
-		mark_heat_chunk(chunk_x - 1, chunk_y)
+		mark_heat_cell(x - 1, y)
 	elif local_x == chunk_size - 1:
-		mark_heat_chunk(chunk_x + 1, chunk_y)
+		mark_heat_cell(x + 1, y)
 	if local_y == 0:
-		mark_heat_chunk(chunk_x, chunk_y - 1)
+		mark_heat_cell(x, y - 1)
 	elif local_y == chunk_size - 1:
-		mark_heat_chunk(chunk_x, chunk_y + 1)
+		mark_heat_cell(x, y + 1)
+
+
+## Vom Waermepass aufgerufen: das Rechteck der noch warmen Zellen uebernehmen.
+func set_heat_bounds(chunk: int, left: int, top: int, right: int, bottom: int) -> void:
+	var base := chunk * BOUNDS_STRIDE
+	heat_bounds[base] = left
+	heat_bounds[base + 1] = top
+	heat_bounds[base + 2] = right
+	heat_bounds[base + 3] = bottom
+
+
+## Der Chunk ist ausgekuehlt.
+func clear_heat(chunk: int) -> void:
+	chunk_needs_heat[chunk] = 0
+	_clear_bounds(heat_bounds, chunk)
 
 
 ## Uebernimmt die im letzten Frame geweckten Chunks als aktive Menge.
@@ -282,8 +337,7 @@ func clear_redraw_bounds(chunk: int) -> void:
 	_clear_bounds(redraw_bounds, chunk)
 
 
-## Ganzen Chunk zum Neuzeichnen vormerken - etwa weil sich die Waermetoenung
-## ueber die volle Flaeche geaendert hat.
+## Ganzen Chunk zum Neuzeichnen vormerken, etwa beim Zuruecksetzen der Welt.
 func mark_redraw_full(chunk: int) -> void:
 	chunk_needs_redraw[chunk] = 1
 	_fill_bounds(redraw_bounds, chunk)
@@ -314,8 +368,8 @@ func wake_neighbours(x: int, y: int) -> void:
 
 
 ## Setzt einen ganzen Bereich in den aktiven Zustand zurueck. Noetig, wenn sich
-## die Spielregeln aendern statt des Inhalts - etwa nach einem Umbau des
-## Gravitationsfelds: ruhende Zellen muessen dann neu bewerten, wo unten ist.
+## die Spielregeln aendern statt des Inhalts - etwa nachdem das Level die
+## Schwerkraft in einem Bereich gesetzt hat.
 func wake_region(x0: int, y0: int, x1: int, y1: int) -> void:
 	var left := maxi(x0, 0)
 	var top := maxi(y0, 0)

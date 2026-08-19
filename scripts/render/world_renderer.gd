@@ -23,29 +23,6 @@ const BYTES_PER_PIXEL := 4
 ## Welche Simulation gezeichnet wird. Im Editor zuweisen.
 @export var simulation: SandSimulation
 
-@export_group("Waermetoenung")
-
-## Faerbt heisse Zellen rot und kalte blau ein.
-@export var show_heat := true:
-	set(value):
-		show_heat = value
-		if is_inside_tree() and _grid != null:
-			redraw_all()
-
-@export var hot_color := Color(1.0, 0.35, 0.08)
-@export var cold_color := Color(0.40, 0.72, 1.0)
-
-## Ab dieser Temperatur beginnt die Rotfaerbung, und ueber diese Spanne
-## erreicht sie ihre volle Staerke.
-@export var hot_starts_at := 45.0
-@export var hot_full_after := 260.0
-@export_range(0.0, 1.0, 0.05) var hot_max_blend := 0.7
-
-## Dasselbe nach unten fuer die Blaufaerbung.
-@export var cold_starts_at := 5.0
-@export var cold_full_after := 55.0
-@export_range(0.0, 1.0, 0.05) var cold_max_blend := 0.45
-
 @export_group("Koernung")
 
 ## Fester Startwert, damit das Farbrauschen ueber Neustarts hinweg gleich
@@ -81,15 +58,21 @@ func _ready() -> void:
 ## der SubViewport bekommt seine Groesse erst von [WorldView], und [Main] ist
 ## der einzige Knoten, dessen [method Node._ready] garantiert nach allen
 ## anderen laeuft.
-func attach(target: SandSimulation) -> void:
+## [param view_override] setzt die Groesse des sichtbaren Ausschnitts, statt
+## sie vom eigenen Viewport zu nehmen. Der Benchmark braucht das: er laeuft
+## ohne SubViewport und wuerde sonst die volle Fenstergroesse hochladen statt
+## der Spielansicht.
+func attach(target: SandSimulation, view_override := Vector2i.ZERO) -> void:
 	simulation = target
 	_grid = target.grid
 	_lookups = target.registry.lookups
 
-	var viewport_size := Vector2i(get_viewport().get_visible_rect().size)
+	var source := view_override
+	if source == Vector2i.ZERO:
+		source = Vector2i(get_viewport().get_visible_rect().size)
 	_view_size = Vector2i(
-		mini(viewport_size.x, _grid.width),
-		mini(viewport_size.y, _grid.height))
+		mini(source.x, _grid.width),
+		mini(source.y, _grid.height))
 	_row_bytes = _view_size.x * BYTES_PER_PIXEL
 
 	_pixels.resize(_grid.cell_count * BYTES_PER_PIXEL)
@@ -164,11 +147,9 @@ func _draw_area(left: int, top: int, right: int, bottom: int) -> void:
 	# Einzelposten des Renderns war gemessen nicht der Texturupload, sondern
 	# genau diese Zugriffe.
 	var materials := _grid.material_id
-	var temperatures := _grid.celsius
 	var grain := _grain
 	var pixels := _pixels
 	var width := _grid.width
-	var tint_by_heat := show_heat
 	var color_red := _lookups.color_red
 	var color_green := _lookups.color_green
 	var color_blue := _lookups.color_blue
@@ -183,21 +164,6 @@ func _draw_area(left: int, top: int, right: int, bottom: int) -> void:
 			var red := color_red[material] + noise
 			var green := color_green[material] + noise
 			var blue := color_blue[material] + noise
-
-			if tint_by_heat:
-				var celsius := temperatures[cell]
-				if celsius > hot_starts_at:
-					var blend := clampf((celsius - hot_starts_at) / hot_full_after,
-						0.0, hot_max_blend)
-					red = lerpf(red, hot_color.r, blend)
-					green = lerpf(green, hot_color.g, blend)
-					blue = lerpf(blue, hot_color.b, blend)
-				elif celsius < cold_starts_at:
-					var blend := clampf((cold_starts_at - celsius) / cold_full_after,
-						0.0, cold_max_blend)
-					red = lerpf(red, cold_color.r, blend)
-					green = lerpf(green, cold_color.g, blend)
-					blue = lerpf(blue, cold_color.b, blend)
 
 			var offset := cell * BYTES_PER_PIXEL
 			pixels[offset] = int(clampf(red, 0.0, 1.0) * 255.0)

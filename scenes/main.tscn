@@ -1,19 +1,18 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene format=3 uid="uid://cxerwtdk8lxpw"]
 
-[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
-[ext_resource type="Script" path="res://scripts/materials/material_registry.gd" id="2_registry"]
-[ext_resource type="Resource" path="res://resources/material_library.tres" id="3_library"]
-[ext_resource type="Script" path="res://scripts/sim/sand_simulation.gd" id="4_simulation"]
-[ext_resource type="Script" path="res://scripts/sim/gravity_field.gd" id="5_gravity"]
-[ext_resource type="Script" path="res://scripts/world/demo_world.gd" id="6_demo"]
-[ext_resource type="Script" path="res://scripts/render/world_renderer.gd" id="7_renderer"]
-[ext_resource type="Script" path="res://scripts/view/world_camera.gd" id="8_camera"]
-[ext_resource type="Script" path="res://scripts/view/world_view.gd" id="9_view"]
-[ext_resource type="Script" path="res://scripts/world/paint_tool.gd" id="10_paint"]
+[ext_resource type="Script" uid="uid://bv5hcc4xcflnw" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://dlte5eoip4jdw" path="res://scripts/materials/material_registry.gd" id="2_registry"]
+[ext_resource type="Resource" uid="uid://b7c62u4vwl4fs" path="res://resources/material_library.tres" id="3_library"]
+[ext_resource type="Script" uid="uid://cafjf7qn02vyw" path="res://scripts/sim/sand_simulation.gd" id="4_simulation"]
+[ext_resource type="Script" uid="uid://c6wegpdycsc1s" path="res://scripts/world/demo_world.gd" id="6_demo"]
+[ext_resource type="Script" uid="uid://c5gyuuf7ix7rc" path="res://scripts/render/world_renderer.gd" id="7_renderer"]
+[ext_resource type="Script" uid="uid://b7r8rdiuvbwan" path="res://scripts/view/world_camera.gd" id="8_camera"]
+[ext_resource type="Script" uid="uid://c8c1kqi41gx3v" path="res://scripts/view/world_view.gd" id="9_view"]
+[ext_resource type="Script" uid="uid://7uxfylnjrfe4" path="res://scripts/world/paint_tool.gd" id="10_paint"]
 [ext_resource type="PackedScene" path="res://scenes/ui/toolbar.tscn" id="11_toolbar"]
 [ext_resource type="PackedScene" path="res://scenes/ui/hud.tscn" id="12_hud"]
 
-[node name="Main" type="Node2D" node_paths=PackedStringArray("simulation", "renderer", "world_view", "camera", "demo_world", "toolbar", "hud", "paint_tool")]
+[node name="Main" type="Node2D" unique_id=337258004 node_paths=PackedStringArray("simulation", "renderer", "world_view", "camera", "demo_world", "toolbar", "hud", "paint_tool")]
 script = ExtResource("1_main")
 simulation = NodePath("SandSimulation")
 renderer = NodePath("WorldViewport/WorldRenderer")
@@ -24,95 +23,60 @@ toolbar = NodePath("UiLayer/Toolbar")
 hud = NodePath("UiLayer/Hud")
 paint_tool = NodePath("PaintTool")
 
-[node name="MaterialRegistry" type="Node" parent="."]
+[node name="MaterialRegistry" type="Node" parent="." unique_id=425569053]
 script = ExtResource("2_registry")
 library = ExtResource("3_library")
 
-[node name="SandSimulation" type="Node" parent="." node_paths=PackedStringArray("registry", "gravity_field")]
+[node name="SandSimulation" type="Node" parent="." unique_id=274778984 node_paths=PackedStringArray("registry")]
 script = ExtResource("4_simulation")
 registry = NodePath("../MaterialRegistry")
-gravity_field = NodePath("GravityField")
-world_size = Vector2i(1024, 576)
-chunk_size = 64
-ambient_celsius = 20.0
-max_steps_per_frame = 4
-heat_interval = 3
-weightless_below = 0.06
-heat_settled_below = 0.35
 
-[node name="GravityField" type="Node" parent="SandSimulation"]
-script = ExtResource("5_gravity")
-base_gravity = Vector2(0, 1)
-
-[node name="DemoWorld" type="Node" parent="." node_paths=PackedStringArray("simulation")]
+[node name="DemoWorld" type="Node" parent="." unique_id=515664832 node_paths=PackedStringArray("simulation")]
 script = ExtResource("6_demo")
 simulation = NodePath("../SandSimulation")
-build_floor = true
-floor_material = &"stone"
-floor_top = 480
-floor_thickness = 12
 
-[node name="WorldLayer" type="CanvasLayer" parent="."]
+[node name="WorldLayer" type="CanvasLayer" parent="." unique_id=967044073]
 
-[node name="WorldView" type="TextureRect" parent="WorldLayer" node_paths=PackedStringArray("world_viewport")]
-offset_right = 576.0
-offset_bottom = 324.0
+[node name="WorldView" type="TextureRect" parent="WorldLayer" unique_id=696264772 node_paths=PackedStringArray("world_viewport")]
+offset_right = 1280.0
+offset_bottom = 720.0
 mouse_filter = 2
 script = ExtResource("9_view")
 world_viewport = NodePath("../../WorldViewport")
-use_project_settings = true
-view_size_override = Vector2i(576, 324)
 
-[node name="WorldViewport" type="SubViewport" parent="."]
-transparent_bg = false
+[node name="WorldViewport" type="SubViewport" parent="." unique_id=643042919]
 handle_input_locally = false
 canvas_item_default_texture_filter = 0
-size = Vector2i(576, 324)
+size = Vector2i(320, 180)
 render_target_update_mode = 4
 
-[node name="WorldRenderer" type="Sprite2D" parent="WorldViewport" node_paths=PackedStringArray("simulation")]
+[node name="WorldRenderer" type="Sprite2D" parent="WorldViewport" unique_id=140241471 node_paths=PackedStringArray("simulation")]
 texture_filter = 1
 centered = false
 script = ExtResource("7_renderer")
 simulation = NodePath("../../SandSimulation")
-show_heat = true
-hot_color = Color(1, 0.35, 0.08, 1)
-cold_color = Color(0.4, 0.72, 1, 1)
-hot_starts_at = 45.0
-hot_full_after = 260.0
-hot_max_blend = 0.7
-cold_starts_at = 5.0
-cold_full_after = 55.0
-cold_max_blend = 0.45
-grain_seed = 20260818
 
-[node name="WorldCamera" type="Camera2D" parent="WorldViewport" node_paths=PackedStringArray("simulation")]
+[node name="WorldCamera" type="Camera2D" parent="WorldViewport" unique_id=1060701226 node_paths=PackedStringArray("simulation")]
 script = ExtResource("8_camera")
 simulation = NodePath("../../SandSimulation")
-pan_speed = 90.0
-zoom_steps = Array[int]([1, 2, 3, 4, 6, 8])
-start_offset = Vector2(0, 440)
 
-[node name="PaintTool" type="Node" parent="." node_paths=PackedStringArray("simulation", "world_view", "toolbar")]
+[node name="PaintTool" type="Node" parent="." unique_id=10303996 node_paths=PackedStringArray("simulation", "world_view", "toolbar")]
 script = ExtResource("10_paint")
 simulation = NodePath("../SandSimulation")
 world_view = NodePath("../WorldLayer/WorldView")
 toolbar = NodePath("../UiLayer/Toolbar")
-brush_radius = 0
 
-[node name="UiLayer" type="CanvasLayer" parent="."]
+[node name="UiLayer" type="CanvasLayer" parent="." unique_id=1054147760]
 layer = 2
 
-[node name="Toolbar" parent="UiLayer" node_paths=PackedStringArray("registry") instance=ExtResource("11_toolbar")]
+[node name="Toolbar" parent="UiLayer" unique_id=710109545 node_paths=PackedStringArray("registry") instance=ExtResource("11_toolbar")]
 offset_left = 10.0
 offset_top = 10.0
-offset_right = 160.0
-offset_bottom = 270.0
+offset_right = 178.0
+offset_bottom = 310.0
 registry = NodePath("../../MaterialRegistry")
-font_size = 13
-default_material = &"sand"
 
-[node name="Hud" parent="UiLayer" node_paths=PackedStringArray("simulation", "renderer", "world_view", "camera") instance=ExtResource("12_hud")]
+[node name="Hud" parent="UiLayer" unique_id=1497973330 node_paths=PackedStringArray("simulation", "renderer", "world_view", "camera") instance=ExtResource("12_hud")]
 simulation = NodePath("../../SandSimulation")
 renderer = NodePath("../../WorldViewport/WorldRenderer")
 world_view = NodePath("../../WorldLayer/WorldView")
