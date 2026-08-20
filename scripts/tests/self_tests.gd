@@ -32,6 +32,10 @@ static func take_over(main: Main) -> bool:
 		return _run_headless(main, DisplacementTest.run)
 	if _has(arguments, "--gravitytest"):
 		return _run_headless(main, GravityTest.run)
+	if _has(arguments, "--firetest"):
+		return _run_headless(main, FireTest.run)
+	if _has(arguments, "--pressuretest"):
+		return _run_headless(main, PressureTest.run)
 	if _has(arguments, "--regressiontest"):
 		return _run_headless(main, RegressionTest.run)
 

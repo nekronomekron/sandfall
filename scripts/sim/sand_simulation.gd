@@ -50,6 +50,10 @@ const SETTLE_MAX := 0xFF
 ## frisch angelegtes Gitter ueberall 0 stehen hat.
 const GENERATION_WRAP := 250
 
+## Ergebnis von [method _hottest_open_neighbour], wenn die Zelle rundum
+## eingeschlossen ist - kaelter als jede Temperatur, die vorkommen kann.
+const NO_OPEN_NEIGHBOUR := -1.0e9
+
 @export_group("Verdrahtung")
 
 ## Woher Materialien und Lookups kommen. Im Editor zuweisen.
@@ -89,6 +93,17 @@ const GENERATION_WRAP := 250
 ## aktiv. Darunter schlaeft er ein.
 @export_range(0.0, 5.0, 0.05) var heat_settled_below := 0.35
 
+@export_group("Druck")
+
+## Laesst den [PressurePass] laufen. Aus heisst: Holz bleibt Holz, egal wie
+## tief es liegt.
+@export var pressure_enabled := true
+
+## Wie viele Weltspalten der Druckpass pro Frame abarbeitet. Der Pass verteilt
+## seinen Durchlauf ueber Frames, damit die Kosten konstant statt stossweise
+## sind - eine ganze Chunk-Spalte auf einmal kostet gemessen 1,5 ms.
+@export_range(1, 256) var pressure_columns_per_frame := 16
+
 ## Startwert des Zufallsgenerators. 0 heisst: bei jedem Start neu wuerfeln.
 ##
 ## Die Simulation wuerfelt an mehreren Stellen - welche Diagonale zuerst
@@ -113,6 +128,13 @@ var stat_heat_cells: int = 0
 var stat_moved: int = 0
 var stat_heat_usec: int = 0
 var stat_move_usec: int = 0
+## Spalten, die der Druckpass in diesem Frame abgearbeitet hat.
+var stat_pressure_columns: int = 0
+var stat_pressure_usec: int = 0
+
+## Der Druckpass. Eigene Klasse, weil er eine ganz andere Iterationsordnung hat
+## als alles andere hier: spaltenweise ueber Chunkgrenzen hinweg statt chunkweise.
+var pressure_pass := PressurePass.new()
 
 var _lookups: MaterialLookups
 
@@ -144,6 +166,16 @@ var _transition_threshold: PackedFloat32Array
 var _transition_target: PackedInt32Array
 var _transition_resets: PackedByteArray
 var _transition_result: PackedFloat32Array
+var _burn_rate: PackedByteArray
+var _burn_exposes: PackedByteArray
+var _clings_to_fuel: PackedByteArray
+var _ignition_celsius: PackedFloat32Array
+var _burn_celsius: PackedFloat32Array
+var _burn_residue: PackedInt32Array
+var _burn_residue_chance: PackedInt32Array
+var _burn_emits: PackedInt32Array
+var _burn_emit_chance: PackedInt32Array
+var _pressure_rate: PackedByteArray
 
 ## Weltgroesse, ebenfalls lokal statt ueber `grid.` - gleiche Begruendung.
 var _width: int
@@ -156,10 +188,9 @@ var _frame: int = 0
 ## einschleicht.
 var _scan_reversed: bool = false
 
-## Wurde im laufenden [method _update_cell] ein Weg NUR deshalb abgelehnt, weil
-## die Zielzelle in diesem Frame schon bewegt wurde? Dann ist die Zelle nicht
-## zur Ruhe gekommen, sondern nur aufgeschoben - siehe dort.
-var _deferred: bool = false
+## Flammen, die eine brennende Zelle setzen will, als Paare (Zelle, Material).
+## Gesammelt statt sofort gesetzt, siehe das Ende von [method _step_heat].
+var _pending_flames := PackedInt32Array()
 
 # Bewusst PackedInt32Array statt Array[Vector2i]: das Indizieren eines
 # typisierten Arrays liefert eine Variant und kostet im Schleifenkern spuerbar
@@ -226,12 +257,23 @@ func _cache_lookups() -> void:
 	_transition_target = _lookups.transition_target
 	_transition_resets = _lookups.transition_resets_temperature
 	_transition_result = _lookups.transition_result
+	_burn_rate = _lookups.burn_rate
+	_burn_exposes = _lookups.burn_exposes
+	_clings_to_fuel = _lookups.clings_to_fuel
+	_ignition_celsius = _lookups.ignition_celsius
+	_burn_celsius = _lookups.burn_celsius
+	_burn_residue = _lookups.burn_residue
+	_burn_residue_chance = _lookups.burn_residue_chance_u8
+	_burn_emits = _lookups.burn_emits
+	_burn_emit_chance = _lookups.burn_emit_chance_u8
+	_pressure_rate = _lookups.pressure_rate
 
 
 ## Leert die Welt. Das Gravitationsfeld faellt dabei auf [member base_gravity]
 ## zurueck - ein Level setzt seine Abweichungen beim Aufbau neu.
 func reset() -> void:
 	grid.clear()
+	pressure_pass.reset()
 
 
 ## Ein Simulationsschritt.
@@ -247,11 +289,15 @@ func step() -> void:
 	# vergleichbar.
 	stat_heat_chunks = 0
 	stat_heat_cells = 0
+	stat_pressure_columns = 0
+	stat_pressure_usec = 0
 
 	if _frame % heat_interval == 0:
 		var heat_started := Time.get_ticks_usec()
 		_step_heat()
 		stat_heat_usec = Time.get_ticks_usec() - heat_started
+
+	_step_pressure()
 
 	grid.begin_frame()
 	stat_awake_chunks = grid.awake_chunk_count()
@@ -364,6 +410,12 @@ func _update_cell(x: int, y: int, cell: int, material: int) -> void:
 
 	if strength < weightless_below:
 		# Schwerelos - das Level gibt hier kein Feld vor.
+		grid.move_state[cell] = CellGrid.MoveState.REST
+		return
+
+	# Eine Flamme haengt an ihrem Brennstoff, statt sofort davonzusteigen -
+	# sonst liesse sich nichts anzuenden, siehe [member SandMaterial.clings_to_fuel].
+	if _clings_to_fuel[material] == 1 and _touches_fuel(cell, x, y):
 		grid.move_state[cell] = CellGrid.MoveState.REST
 		return
 
@@ -571,6 +623,7 @@ func _commit(cell: int, x: int, y: int, target_x: int, target_y: int,
 	var states := grid.move_state
 	var generations := grid.move_generation
 	var settles := grid.settle_state
+	var progress := grid.conversion_progress
 	var generation := _generation
 
 	var material := materials[cell]
@@ -578,21 +631,26 @@ func _commit(cell: int, x: int, y: int, target_x: int, target_y: int,
 
 	var moved_flags := flags[cell]
 	var moved_celsius := temperatures[cell]
+	# Eine halb verbrannte oder halb gepresste Zelle nimmt ihren Fortschritt mit.
+	var moved_progress := progress[cell]
 	var swapped_flags := flags[target]
 	var swapped_settle := settles[target]
 	var swapped_celsius := temperatures[target]
+	var swapped_progress := progress[target]
 
 	materials[target] = material
 	flags[target] = moved_flags
 	temperatures[target] = moved_celsius
 	states[target] = state
 	settles[target] = mini(settle, SETTLE_MAX)
+	progress[target] = moved_progress
 	generations[target] = generation
 
 	materials[cell] = occupant
 	flags[cell] = swapped_flags
 	temperatures[cell] = swapped_celsius
 	settles[cell] = swapped_settle
+	progress[cell] = swapped_progress
 	var left_empty := occupant == MaterialLibrary.EMPTY_ID
 	states[cell] = CellGrid.MoveState.REST if left_empty else CellGrid.MoveState.FALLING
 	generations[cell] = generation
@@ -604,6 +662,13 @@ func _commit(cell: int, x: int, y: int, target_x: int, target_y: int,
 	# Material bliebe dann stehen, bis es zufaellig von woanders geweckt wird.
 	grid.wake_at(x, y)
 	grid.wake_at(target_x, target_y)
+
+	# Druckempfindliches Material, das in einen anderen Chunk wandert, muss dort
+	# angemeldet werden - sonst sieht der Druckpass diese Spalte nie an.
+	if _pressure_rate[material] > 0:
+		grid.mark_pressure_at(target_x, target_y)
+	if not left_empty and _pressure_rate[occupant] > 0:
+		grid.mark_pressure_at(x, y)
 
 	# Eine warme Zelle nimmt ihre Waerme mit, wenn sie sich bewegt. Ohne
 	# diese Meldung liefe sie aus dem Dirty-Rect des Waermepasses heraus
@@ -696,6 +761,29 @@ func _entrain(x: int, y: int, direction: int) -> void:
 		grid.move_state[neighbour] = CellGrid.MoveState.FALLING
 		grid.wake_at(neighbour_x, neighbour_y)
 
+# --- Druck -------------------------------------------------------------------
+
+## Laesst den [PressurePass] ein Stueck weiterlaufen und fuehrt aus, was er
+## dabei gefunden hat.
+##
+## Der Pass selbst schreibt nur den Fortschrittszaehler; die eigentliche
+## Umwandlung passiert hier, mit derselben Buchhaltung wie ein
+## Temperaturwechsel. Das haelt den Sweep als reine Leseschleife schnell und
+## die Umwandlungsregeln an einer Stelle.
+func _step_pressure() -> void:
+	if not pressure_enabled:
+		return
+	pressure_pass.columns_per_frame = pressure_columns_per_frame
+	pressure_pass.step(grid, _lookups)
+	stat_pressure_columns = pressure_pass.stat_columns
+	stat_pressure_usec = pressure_pass.stat_usec
+
+	var pending := pressure_pass.pending
+	var width := _width
+	for entry in range(0, pending.size(), 2):
+		var cell := pending[entry]
+		_transition_cell(cell, cell % width, cell / width, pending[entry + 1])
+
 # --- Waermeleitung und Aggregatzustands-FSM ----------------------------------
 
 ## Waermeleitung ueber die vier direkten Nachbarn, gewichtet mit
@@ -732,7 +820,9 @@ func _step_heat() -> void:
 	var transition_target := _transition_target
 	var transition_resets := _transition_resets
 	var transition_result := _transition_result
+	var burn_rate := _burn_rate
 	var settled_below := heat_settled_below
+	_pending_flames.clear()
 
 	for chunk_y in grid.chunks_y:
 		for chunk_x in grid.chunks_x:
@@ -802,6 +892,7 @@ func _step_heat() -> void:
 					# Zelle eines Materials mit Uebergaengen - also fuer jede
 					# Wasserzelle - und ein GDScript-Aufruf pro Zelle kostet hier
 					# mehr als die Pruefung selbst.
+					var converted := false
 					var transition := transition_start[material]
 					var transitions_end := transition + transition_count[material]
 					while transition < transitions_end:
@@ -815,8 +906,16 @@ func _step_heat() -> void:
 							# Passes ersetzt wird.
 							if transition_resets[transition] == 1:
 								destination[cell] = transition_result[transition]
+							converted = true
 							break
 						transition += 1
+
+					# Feuer reitet hier mit: der Waermepass besucht ohnehin genau
+					# die heissen Zellen und hat ihre Temperatur zur Hand. Fuer
+					# alles Unbrennbare kostet das den einen Lesezugriff auf
+					# burn_rate und sonst nichts.
+					if not converted and burn_rate[material] > 0:
+						updated = _burn_cell(cell, x, y, material, updated, source, destination)
 
 					if absf(updated - ambient) > settled_below:
 						if x < hot_left:
@@ -848,12 +947,139 @@ func _step_heat() -> void:
 
 	grid.celsius = destination
 
+	# Erst jetzt, nachdem der Doppelpuffer uebernommen ist: set_cell schreibt in
+	# grid.celsius, und das ist waehrend des Passes noch der Quellpuffer - eine
+	# Flamme haette sich sonst selbst wieder ueberschrieben.
+	for entry in range(0, _pending_flames.size(), 2):
+		var cell := _pending_flames[entry]
+		grid.set_cell(cell % _width, cell / _width, _pending_flames[entry + 1], false)
+	_pending_flames.clear()
+
 
 func _any_chunk_needs_heat() -> bool:
 	for chunk in grid.chunk_count:
 		if grid.chunk_needs_heat[chunk] != 0:
 			return true
 	return false
+
+
+# --- Feuer -------------------------------------------------------------------
+
+## Ein Brandschritt fuer eine brennbare Zelle. Liefert die Temperatur zurueck,
+## mit der der Waermepass weiterrechnet.
+##
+## NUR AN DER OBERFLAECHE: gebrannt wird nur, solange die Zelle eine freie Seite
+## hat. Zellen im Inneren eines Blocks haben keine und bleiben unversehrt, bis
+## die Schicht ueber ihnen weg ist - daraus ergibt sich die nach innen wandernde
+## Brandfront, ohne dass irgendwo eine Front verwaltet wuerde. Dieselbe Regel
+## loescht auch: wer unter Wasser geraet, hat keine freie Seite mehr.
+##
+## Eine brennende Zelle zieht sich selbst auf ihre Brandtemperatur hoch und wird
+## damit zur Waermequelle, die ihre Nachbarn ueber die Zuendtemperatur bringt.
+## Mehr braucht die Ausbreitung nicht.
+func _burn_cell(cell: int, x: int, y: int, material: int, celsius: float,
+		source: PackedFloat32Array, destination: PackedFloat32Array) -> float:
+	# Eine freie Seite suchen und dabei gleich merken, wie heiss es dort ist.
+	# Beides in einem Durchgang, weil es dieselben vier Nachbarn sind.
+	var flame_celsius := _hottest_open_neighbour(cell, x, y, source)
+	if flame_celsius == NO_OPEN_NEIGHBOUR:
+		return celsius
+
+	# Entzuendet wird von der eigenen Temperatur ODER von der Flamme daneben.
+	# Ohne den zweiten Weg liesse sich nichts anzuenden: eine Flamme steigt eine
+	# Zelle pro Frame auf, der Waermepass laeuft nur jeden dritten - ueber einer
+	# waagerechten Flaeche ist sie wieder weg, bevor Waermeleitung allein das
+	# Holz auf Zuendtemperatur gebracht haette. Eine Flamme, die die Oberflaeche
+	# leckt, zuendet sie eben sofort an, statt erst den ganzen Balken zu heizen.
+	var ignition := _ignition_celsius[material]
+	if celsius < ignition and flame_celsius < ignition:
+		return celsius
+
+	var burning_celsius := _burn_celsius[material]
+	if celsius < burning_celsius:
+		destination[cell] = burning_celsius
+		celsius = burning_celsius
+
+	var advanced := grid.conversion_progress[cell] + _burn_rate[material]
+	if advanced < 255:
+		grid.conversion_progress[cell] = advanced
+		_emit_flame(cell, x, y, material)
+		return celsius
+
+	# Durchgebrannt. Was zurueckbleibt, entscheidet der Wurf gegen die
+	# Rueckstandschance: bei 1.0 immer Kohle - dann kohlt ein Block nur aussen
+	# an, weil die Kruste das Feuer abhaelt. Darunter wird ein Teil restlos
+	# verzehrt und die Front frisst sich nach innen.
+	var remains := MaterialLibrary.EMPTY_ID
+	if (_rng.randi() & 0xFF) < _burn_residue_chance[material]:
+		remains = _burn_residue[material]
+	_transition_cell(cell, x, y, remains)
+	return celsius
+
+
+## Liegt neben dieser Zelle brennbares Material? Nur fuer Flammen aufgerufen,
+## also selten - der Torwaechter davor ist ein einzelner Lesezugriff.
+func _touches_fuel(cell: int, x: int, y: int) -> bool:
+	var materials := grid.material_id
+	var burn_rate := _burn_rate
+	if x > 0 and burn_rate[materials[cell - 1]] > 0:
+		return true
+	if x < _width - 1 and burn_rate[materials[cell + 1]] > 0:
+		return true
+	if y > 0 and burn_rate[materials[cell - _width]] > 0:
+		return true
+	if y < _height - 1 and burn_rate[materials[cell + _width]] > 0:
+		return true
+	return false
+
+
+## Die Temperatur der heissesten offenen Nachbarzelle, oder
+## [constant NO_OPEN_NEIGHBOUR], wenn die Zelle rundum eingeschlossen ist.
+##
+## Offen sind Luft und Gase. Alles andere schirmt ab - das ist die Regel, aus
+## der sowohl die nach innen wandernde Brandfront folgt als auch, dass Wasser
+## loescht.
+func _hottest_open_neighbour(cell: int, x: int, y: int,
+		source: PackedFloat32Array) -> float:
+	var materials := grid.material_id
+	var exposes := _burn_exposes
+	var hottest := NO_OPEN_NEIGHBOUR
+	if x > 0 and exposes[materials[cell - 1]] == 1:
+		hottest = source[cell - 1]
+	if x < _width - 1 and exposes[materials[cell + 1]] == 1:
+		hottest = maxf(hottest, source[cell + 1])
+	if y > 0 and exposes[materials[cell - _width]] == 1:
+		hottest = maxf(hottest, source[cell - _width])
+	if y < _height - 1 and exposes[materials[cell + _width]] == 1:
+		hottest = maxf(hottest, source[cell + _width])
+	return hottest
+
+
+## Setzt gelegentlich eine sichtbare Flamme in einen freien Nachbarn. Rein
+## kosmetisch - die Ausbreitung laeuft ueber die Waermeleitung, nicht hierueber.
+## Die Richtung wuerfelt, damit Flammen nicht systematisch zu einer Seite
+## schlagen.
+func _emit_flame(cell: int, x: int, y: int, material: int) -> void:
+	var flame := _burn_emits[material]
+	if flame < 0:
+		return
+	if (_rng.randi() & 0xFF) >= _burn_emit_chance[material]:
+		return
+
+	var materials := grid.material_id
+	var start := _rng.randi() % DIRECTION_COUNT
+	for attempt in DIRECTION_COUNT:
+		var direction := (start + attempt) % DIRECTION_COUNT
+		var target_x := x + _direction_x[direction]
+		var target_y := y + _direction_y[direction]
+		if target_x < 0 or target_y < 0 or target_x >= _width or target_y >= _height:
+			continue
+		var target := target_y * _width + target_x
+		if materials[target] != MaterialLibrary.EMPTY_ID:
+			continue
+		_pending_flames.append(target)
+		_pending_flames.append(flame)
+		return
 
 
 func _transition_cell(cell: int, x: int, y: int, target_material: int) -> void:
@@ -868,6 +1094,10 @@ func _transition_cell(cell: int, x: int, y: int, target_material: int) -> void:
 
 	grid.move_state[cell] = CellGrid.MoveState.FALLING
 	grid.settle_state[cell] = 0
+	# Das neue Material faengt unversehrt an - der Fortschritt gehoerte dem alten.
+	grid.conversion_progress[cell] = 0
+	if _pressure_rate[target_material] > 0:
+		grid.mark_pressure_at(x, y)
 
 	# Aus einem Feststoff kann eine Fluessigkeit geworden sein oder umgekehrt.
 	# Ruhende Nachbarn muessen ihre Lage neu bewerten.

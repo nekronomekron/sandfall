@@ -48,12 +48,17 @@ func _cell_line() -> String:
 	var index := grid.index_of(cell.x, cell.y)
 	var material := simulation.registry.get_material(grid.material_id[index])
 	var is_static := (grid.cell_flags[index] & CellGrid.FLAG_STATIC) != 0
-	return "Zelle (%d, %d)   %s%s   %s   %.0f C   Gravitation %.2f" % [
+	# Der Umwandlungsfortschritt taucht nur auf, wenn wirklich etwas laeuft -
+	# sonst stuenden hinter jeder Zelle "0%".
+	var progress := grid.conversion_progress[index]
+	return "Zelle (%d, %d)   %s%s   %s   %.0f C   Gravitation %.2f   Druck %.0f%s" % [
 		cell.x, cell.y, material.display_name,
 		" [statisch]" if is_static else "",
 		_state_name(grid.move_state[index]),
 		grid.celsius[index],
 		grid.gravity[index].length(),
+		grid.pressure_at(cell.x, cell.y),
+		"   Umwandlung %d%%" % (progress * 100 / 255) if progress > 0 else "",
 	]
 
 

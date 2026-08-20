@@ -1,9 +1,10 @@
 # Sand Simulation
 
-Falling-Sand-Simulation in Godot 4.7, GDScript. Eine Zelle ist ein Pixel. Drei
+Falling-Sand-Simulation in Godot 4.7, GDScript. Eine Zelle ist ein Pixel. Fuenf
 zusammenspielende Systeme: eine Bewegungs-FSM pro Zelle, eine
-temperaturgetriebene Aggregatzustands-FSM und ein statisches, aber
-ortsabhaengiges Gravitationsfeld.
+temperaturgetriebene Aggregatzustands-FSM, ein statisches, aber ortsabhaengiges
+Gravitationsfeld, ein Brand, der sich von aussen nach innen frisst, und ein
+Druck entlang der Schwerkraft, der Holz zu Kohle und Kohle zu Diamant presst.
 
 ![Screenshot](docs/screenshot.png)
 
@@ -46,7 +47,10 @@ und Schwenkgeschwindigkeit an der `WorldCamera`, der Pinselradius am
 | `scripts/materials/material_library.gd` | Die Liste aller Materialtypen (Resource) |
 | `scripts/materials/material_registry.gd` | Knoten, der die Bibliothek haelt und aufloest |
 | `scripts/materials/material_lookups.gd` | Materialeigenschaften als flache Arrays |
+| `scripts/materials/burn_behaviour.gd` | Macht ein Material brennbar (Resource) |
+| `scripts/materials/pressure_change.gd` | Macht ein Material druckempfindlich (Resource) |
 | `scripts/sim/cell_grid.gd` | Zell- und Chunk-Arrays, Zugriff, Aufwachlogik |
+| `scripts/sim/pressure_pass.gd` | Spaltenweiser Drucklauf, ueber Frames verteilt |
 | `scripts/sim/sand_simulation.gd` | Simulationsschritt: Bewegung, Waerme, Zustandswechsel |
 | `scripts/render/world_renderer.gd` | Gitter -> Textur, nur geaenderte Bereiche |
 | `scripts/view/world_view.gd` | Ganzzahlige Skalierung, Maus -> Weltzelle |
@@ -89,6 +93,18 @@ liegt in der Liste `transitions` des Materials. Er nennt sein Ziel beim Namen
 (`becomes = &"ice"`) statt per Verweis: Wasser zeigt auf Eis und Eis zurueck
 auf Wasser, und solche Ringe kann Godot zwischen zwei `.tres`-Dateien nicht
 laden. Die Bibliothek loest die Namen einmal beim Start in ids auf.
+
+**Brennbar machen.** Ein `BurnBehaviour` an `burning` haengen: Zuendtemperatur,
+Brandgeschwindigkeit, was zurueckbleibt und wie oft. Fehlt die Resource, brennt
+das Material nicht - so ist Kohle "nicht mehr brennbar" und Diamant gar nicht
+erst.
+
+**Druckempfindlich machen.** Ein `PressureChange` an `pressure` haengen:
+Schwelle, Geschwindigkeit, Zielmaterial. Fehlt sie, laesst Druck das Material
+kalt.
+
+Beide nennen ihre Ziele wie `MaterialTransition` beim Namen, aus demselben
+Grund.
 
 **Neue Eigenschaft.** Ein `@export` in `sand_material.gd`, ein Default, und die
 Auswertung dort wo sie wirkt. Liegt sie im Schleifenkern von Bewegung, Waerme
@@ -159,7 +175,7 @@ Eingabetest braucht ein Fenster. Jeder Test liegt in einer eigenen Datei unter
 ```
 
 Ebenso `--fsmtest`, `--flowtest`, `--leveltest`, `--displacetest`,
-`--gravitytest`, `--regressiontest`. Ohne
+`--gravitytest`, `--firetest`, `--pressuretest`, `--regressiontest`. Ohne
 `--headless` laufen `--inputtest` und `--shot [--frames=N]`; letzterer rendert N
 Frames und schreibt einen Screenshot.
 
@@ -202,6 +218,15 @@ derselbe Stein kann unverrueckbarer Boden oder fallendes Geroell sein.
 | Eis | Feststoff | 0,90 | Wird mit -60 C platziert, taut ueber 2 C, faellt als Block |
 | Dampf | Gas | 0,02 | Steigt auf, kondensiert unter 95 C |
 | Lava | Fluessigkeit | 0,50 | 1200 C beim Platzieren, erstarrt unter 700 C zu Stein |
+| Holz | Feststoff | 0,85 | Dichte 700 - **schwimmt auf Wasser**. Brennbar ab 250 C, wird unter Druck zu Kohle |
+| Kohle | Pulver | 0,70 | Nicht mehr brennbar. Wird unter hohem Druck zu Diamant |
+| Feuer | Gas | 0,02 | 1100 C, haengt an seinem Brennstoff, kuehlt unter 300 C zu Rauch ab |
+| Rauch | Gas | 0,02 | Steigt auf und loest sich unter 60 C restlos auf |
+| Diamant | Feststoff | 0,90 | Leitet Waerme am Stabilitaetslimit. Weder brennbar noch weiter verformbar |
+
+Dass Holz auf Wasser schwimmt, steht nirgends als Regel - es faellt aus der
+Verdraengung: mit Dichte 700 gegen 1000 kann es sich nicht durch Wasser nach
+unten schieben und bleibt liegen.
 
 Waerme und Kaelte kommen aus echten Materialien statt aus abstrakten Quellen:
 Lava bringt ihre 1200 Grad mit, Eis seine -60 Grad, und die Waermeleitung macht
@@ -215,10 +240,10 @@ ueberhaupt bewegt, entscheidet das Static-Flag der einzelnen Zelle:
 
 | Phase | Faellt | Rutscht diagonal ab | Breitet sich seitlich aus |
 | --- | --- | --- | --- |
-| Feststoff (Eis) | ja | **nein** | nein |
-| Pulver (Sand, Stein) | ja | ja | nein |
+| Feststoff (Eis, Holz, Diamant) | ja | **nein** | nein |
+| Pulver (Sand, Stein, Kohle) | ja | ja | nein |
 | Fluessigkeit (Wasser, Lava) | ja | ja | ja |
-| Gas (Dampf) | entgegen der Schwerkraft | ja | ja |
+| Gas (Dampf, Feuer, Rauch) | entgegen der Schwerkraft | ja | ja |
 
 Der Unterschied zwischen Feststoff und Pulver ist genau das diagonale
 Abrutschen: ein Eisblock stapelt sich in Saeulen und behaelt seine Form, ein
@@ -288,6 +313,106 @@ Frame, weil nie neu gerechnet wird.
 | `(0, -1)` umgekehrt | Schwerpunkt 54,8 Zellen nach oben |
 | `(0, 0)` schwerelos | Schwerpunkt bewegt sich um 0,5 Zellen |
 | `(1, 0)` seitlich | Schwerpunkt 24,8 Zellen nach rechts |
+
+## Feuer: es gibt keine Brandfront
+
+Feuer bekommt **keinen eigenen Durchlauf** ueber das Gitter. Es reitet auf dem
+Waermepass mit, der die heissen Zellen ohnehin schon besucht und ihre
+Temperatur zur Hand hat. Fuer jede unbrennbare Zelle kostet das genau einen
+Lesezugriff auf `burn_rate`.
+
+Die ganze Mechanik steht in drei Regeln:
+
+1. **Eine Zelle brennt nur, wenn sie eine freie Seite hat** - ein direkter
+   Nachbar aus Luft oder Gas. Zellen im Inneren eines Blocks haben keine und
+   bleiben unversehrt liegen, bis die Schicht ueber ihnen weg ist.
+2. **Eine brennende Zelle zieht sich selbst auf ihre Brandtemperatur hoch** und
+   wird damit zur Waermequelle, die ihre Nachbarn ueber die Zuendtemperatur
+   bringt. Mehr braucht die Ausbreitung nicht.
+3. **Feuer und Rauch sind gewoehnliche Materialien** mit gewoehnlichen
+   Temperaturuebergaengen: Feuer kuehlt unter 300 C zu Rauch ab, Rauch unter
+   60 C zu Luft. Die Lebensdauer beider ist damit reine Daten in ihren
+   `.tres`-Dateien - null Code.
+
+Aus Regel 1 folgt das, was gefordert war, ohne dass es irgendwo steht: **die
+Brandfront wandert von aussen nach innen.** Niemand verwaltet eine Front, es
+gibt keine Liste brennender Zellen. Es ergibt sich daraus, welche Zelle gerade
+frei liegt. Im `--firetest` bleibt der Kern eines Blocks dem Rand um bis zu
+94 Prozentpunkte voraus.
+
+Dieselbe Regel loescht auch: Wasser ist eine Fluessigkeit und keine freie
+Seite, also brennt unter Wasser nichts.
+
+### Was uebrig bleibt
+
+`BurnBehaviour.residue_chance` entscheidet zwischen zwei Verhalten. Bei 1,0
+wird jede Holzzelle zu Kohle, die Kruste schirmt das Feuer ab, und ein Block
+kohlt nur aussen an. Darunter wird ein Teil restlos verzehrt, das Feuer frisst
+sich nach innen und laesst verstreute Kohle zurueck. Holz steht auf **0,35**;
+aus einem 24x24-Block werden so rund 220 Zellen Kohle und viel Rauch.
+
+### Warum Flammen kleben
+
+`SandMaterial.clings_to_fuel` laesst eine Flamme liegen, solange brennbares
+Material danebenliegt. Ohne das liesse sich nichts anzuenden, und der Grund ist
+eine Taktfrage: ein Gas steigt **eine Zelle pro Frame** auf, der Waermepass
+laeuft aber nur **jeden dritten Frame**. Eine Flamme, die auf einen Holzstapel
+gelegt wird, ist schon zwei Zellen weit weg, bevor sie das erste Mal Waerme
+abgeben durfte. Seitlich an einer Wand ginge es gut, oben auf einer Flaeche
+nie - und genau das ist die naheliegendste Handbewegung.
+
+Eine Flamme haengt deshalb an ihrem Brennstoff, bis er weg ist, und steigt erst
+dann auf wie jedes andere Gas. Nebenbei entzuendet eine anliegende Flamme die
+Oberflaeche sofort, statt erst den ganzen Balken auf Zuendtemperatur zu heizen.
+
+## Druck: eine Spalte pro Frame statt einer Welt pro Stoss
+
+Druck ist die Last des Materials, das entlang der Schwerkraft ueber einer Zelle
+liegt, gemessen als Summe der Dichten geteilt durch 1000 - also in "Metern
+Wassersaeule". 100 Zellen Wasser ergeben 100, 100 Zellen Sand rund 160.
+
+| Uebergang | ab Last | Dauer |
+| --- | --- | --- |
+| Holz -> Kohle | 40 | 32 Durchlaeufe |
+| Kohle -> Diamant | 120 | 43 Durchlaeufe |
+
+Eine **Luftzelle setzt die Last auf 0 zurueck**: eine Hoehlendecke traegt, was
+ueber ihr liegt, nicht der Boden darunter. Dasselbe gilt an der Grenze zu einem
+Bereich mit abweichender Schwerkraft.
+
+### Warum der Pass so gebaut ist
+
+Die Last einer Zelle haengt von allem ueber ihr ab - ein Chunk allein reicht
+dafuer nicht, und das bricht mit allem anderen in dieser Simulation. Ein Sweep
+ueber die ganze Welt kostet gemessen **25,8 ms**. Pro Frame unbezahlbar, und
+selbst als Stoss alle paar Frames ein sichtbarer Ruckler. Drei Dinge machen ihn
+bezahlbar:
+
+1. **Kein Druck-Array.** Der Sweep laeuft ohnehin ueber jede Zelle der Spalte
+   und loest die Umwandlung gleich dort aus. Das spart ein Float je Zelle
+   (2,4 MB) und einen Schreibzugriff pro Zelle. Wer den Wert einzeln braucht -
+   HUD, Tests - fragt `CellGrid.pressure_at()`, das die Spalte neu hochlaeuft.
+2. **Nur betroffene Spalten.** Gesehen werden nur Chunk-Spalten, in denen ein
+   Chunk druckempfindliches Material gemeldet hat, und nur bis zur Unterkante
+   des tiefsten davon. **Ohne Holz oder Kohle in der Welt kostet der Pass
+   0,02 ms** - das ist der Test auf die leere Arbeitsliste und sonst nichts.
+3. **Ueber Frames verteilt.** Jeder Frame arbeitet nur
+   `pressure_columns_per_frame` Weltspalten ab (16). Die Kosten sind damit
+   konstant statt stossweise; ein Zyklus ueber eine Chunk-Spalte dauert vier
+   Frames. Fuer einen Vorgang, der ohnehin "eine gewisse Zeit" braucht, ist das
+   die natuerliche Taktung, kein Zugestaendnis.
+
+Der naechste Schritt waere, den Takt anzupassen: hat ein voller Zyklus nichts
+veraendert, koennte der naechste seltener laufen. Bisher nicht noetig - der
+Pass kostet aktiv rund eine halbe Millisekunde.
+
+### Der geteilte Fortschrittszaehler
+
+Brand und Druck teilen sich **ein** Byte je Zelle
+(`CellGrid.conversion_progress`). Eine Zelle brennt - dann liegt sie frei - oder
+sie steht unter Last - dann ist sie begraben. Beides ist "wie weit ist die
+Umwandlung gediehen", und ein gemeinsames Byte spart ein zweites Array ueber
+die ganze Welt. Der Zaehler wandert mit, wenn die Zelle sich bewegt.
 
 ## Verdraengung: wer darf durch wen hindurch?
 
@@ -417,14 +542,27 @@ Die Simulation laeuft in den Selbsttests mit **festem Zufallsstartwert**
 Laeufe derselben Szene um mehr als 70 Prozent - mehr, als jede Optimierung
 ausmacht. Mit ihm liegen Wiederholungen innerhalb weniger Prozent.
 
-| Szenario | Median | Waerme | Bewegung | Rendern |
-| --- | --- | --- | --- | --- |
-| Ruhe (alles gesetzt) | 0,3 ms | 0,00 | 0,02 | 0,24 |
-| Becken: Wasser + Sand, **ohne** Lava | 11,3 ms | 0,00 | 10,7 | 0,99 |
-| Becken: dasselbe **mit** Lava | 30,1 ms | 1,90 | 28,0 | 2,35 |
-| Lava allein, kein Wasser | 0,5 ms | 0,83 | 0,99 | 0,29 |
-| Gravitationszone mit Sand | 2,1 ms | 0,00 | 2,0 | 0,62 |
-| Stress: Grossblock in freiem Fall | 131 ms | 0,00 | 136 | 7,7 |
+| Szenario | Median | Waerme | Bewegung | Rendern | Druck |
+| --- | --- | --- | --- | --- | --- |
+| Ruhe (alles gesetzt) | 0,45 ms | 0,00 | 0,03 | 0,34 | 0,02 |
+| Becken: Wasser + Sand, **ohne** Lava | 13,3 ms | 0,00 | 14,2 | 1,33 | 0,02 |
+| Becken: dasselbe **mit** Lava | 34,7 ms | 2,77 | 31,7 | 2,66 | 0,02 |
+| Lava allein, kein Wasser | 0,59 ms | 0,86 | 1,01 | 0,32 | 0,02 |
+| Gravitationszone mit Sand | 2,69 ms | 0,00 | 2,61 | 0,77 | 0,02 |
+| **Brennendes Holz: Wand angezuendet** | 5,83 ms | 2,95 | 2,29 | 1,94 | 0,47 |
+| **Druck: Holz unter Sandsaeule** | 0,76 ms | 0,00 | 0,13 | 0,34 | 0,54 |
+| Stress: Grossblock in freiem Fall | 159 ms | 0,00 | 166 | 8,02 | 0,02 |
+
+Feuer und Druck haben die bestehenden Szenarien nicht messbar verteuert - die
+Abweichungen liegen unter vier Prozent und damit im Rauschen zwischen zwei
+Laeufen. Die Spalte **Druck** steht in allen alten Zeilen auf 0,02 ms: das ist
+der Test auf die leere Arbeitsliste, mehr passiert ohne Holz oder Kohle nicht.
+
+Eine brennende Wand kostet 5,8 ms, und der groesste Posten darin ist die
+**Waerme** (2,95 ms) - anders als bei Lava, wo die Bewegung dominiert. Der
+Grund ist derselbe wie dort beschrieben: Feuer heizt eine grosse Flaeche, und
+der Waermepass rechnet sie durch. Flammen und Rauch selbst sind wenige Zellen,
+seit Flammen an ihrem Brennstoff kleben statt sofort davonzusteigen.
 
 Im laufenden Spiel mit der Demo-Szene: **60 fps bei 6,9 ms Simulation und
 1,7 ms Rendern**.
@@ -641,3 +779,13 @@ und Entladen am Rand.
   (950 C). Sie frisst sich deshalb mit der Zeit durch duenne Steinboeden. Das
   ist eine bewusste Regel, faellt aber leicht als Fehler auf - wer es nicht will,
   setzt die Schwelle in `resources/materials/stone.tres` hoeher.
+- Druck rechnet **entlang der Grundschwerkraft**, nicht entlang des oertlichen
+  Feldes. In einer Zone mit abweichender Schwerkraft setzt die Saeule deshalb
+  nur zurueck, statt in die neue Richtung weiterzulaufen. Fuer eine Halle mit
+  umgekehrter Schwerkraft hiesse das: darin entsteht gar kein Druck.
+- Gluehend heisses Holz **im** Wasser kocht sein eigenes Wasser zu Dampf, und
+  Dampf ist ein Gas - also eine freie Seite. Es brennt dann doch. Wasser
+  schuetzt gegen Feuer von aussen, nicht gegen eine bereits gluehende Zelle.
+- Holz unter tiefem Wasser wird zu Kohle: 40 Zellen Wassersaeule reichen fuer
+  die Schwelle. Wer das nicht will, dreht `threshold` in
+  `resources/materials/wood.tres` hoch.

@@ -1,0 +1,35 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=6 format=3]
+
+[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="1_material"]
+[ext_resource type="Script" path="res://scripts/materials/burn_behaviour.gd" id="3_burn"]
+[ext_resource type="Script" path="res://scripts/materials/pressure_change.gd" id="4_pressure"]
+
+[sub_resource type="Resource" script_class="BurnBehaviour" id="Burn"]
+script = ExtResource("3_burn")
+ignition_celsius = 250.0
+burn_rate = 14
+burn_celsius = 820.0
+residue = &"coal"
+residue_chance = 0.35
+emits = &"fire"
+emit_chance = 0.2
+
+[sub_resource type="Resource" script_class="PressureChange" id="Press"]
+script = ExtResource("4_pressure")
+threshold = 40.0
+rate = 8
+becomes = &"coal"
+
+[resource]
+script = ExtResource("1_material")
+material_name = &"wood"
+display_name = "Holz"
+color = Color(0.55, 0.36, 0.19, 1)
+grain = 0.09
+phase = 1
+density = 700.0
+friction = 0.85
+conductivity = 0.35
+heat_capacity = 1.4
+burning = SubResource("Burn")
+pressure = SubResource("Press")

@@ -46,6 +46,30 @@ var friction_u8: PackedByteArray
 ## bevor sie liegen bleibt.
 var direction_change_budget: PackedByteArray
 
+# --- Feuer -------------------------------------------------------------------
+## 0 heisst: nicht brennbar. Das ist der Torwaechter im Waermepass - fuer alle
+## anderen Zellen kostet Feuer genau diesen einen Lesezugriff.
+var burn_rate: PackedByteArray
+## Laesst dieses Material Feuer an einen Nachbarn heran (Luft und Gase)?
+var burn_exposes: PackedByteArray
+## Flammen, die an ihrem Brennstoff haengen, siehe
+## [member SandMaterial.clings_to_fuel].
+var clings_to_fuel: PackedByteArray
+var ignition_celsius: PackedFloat32Array
+var burn_celsius: PackedFloat32Array
+var burn_residue: PackedInt32Array
+## Wahrscheinlichkeiten als 0..255, damit im Schleifenkern kein Float-Vergleich
+## noetig ist.
+var burn_residue_chance_u8: PackedInt32Array
+var burn_emits: PackedInt32Array
+var burn_emit_chance_u8: PackedInt32Array
+
+# --- Druck -------------------------------------------------------------------
+## 0 heisst: nicht druckempfindlich. Torwaechter wie [member burn_rate].
+var pressure_rate: PackedByteArray
+var pressure_threshold: PackedFloat32Array
+var pressure_target: PackedInt32Array
+
 # --- Waerme ------------------------------------------------------------------
 var heat_transfer: PackedFloat32Array
 var ambient_pull: PackedFloat32Array
@@ -92,6 +116,27 @@ func build(library: MaterialLibrary) -> void:
 		friction_u8[id] = int(clampf(material.friction, 0.0, 1.0) * 255.0)
 		direction_change_budget[id] = _budget_for(material.friction)
 
+		burn_exposes[id] = 1 if material.exposes_neighbours() else 0
+		clings_to_fuel[id] = 1 if material.clings_to_fuel else 0
+		if material.burning != null:
+			var burning := material.burning
+			burn_rate[id] = clampi(burning.burn_rate, 1, 255)
+			ignition_celsius[id] = burning.ignition_celsius
+			burn_celsius[id] = burning.burn_celsius
+			burn_residue[id] = burning.residue_id
+			burn_residue_chance_u8[id] = _chance_u8(burning.residue_chance)
+			burn_emits[id] = burning.emits_id
+			burn_emit_chance_u8[id] = _chance_u8(burning.emit_chance)
+		else:
+			burn_emits[id] = -1
+
+		if material.pressure != null:
+			pressure_rate[id] = clampi(material.pressure.rate, 1, 255)
+			pressure_threshold[id] = material.pressure.threshold
+			pressure_target[id] = material.pressure.target_id
+		else:
+			pressure_target[id] = -1
+
 		var capacity := maxf(material.heat_capacity, 0.1)
 		heat_transfer[id] = clampf(material.conductivity / capacity, 0.0, MAX_HEAT_TRANSFER)
 		var pull := AMBIENT_PULL_AIR if material.phase == SandMaterial.Phase.EMPTY else AMBIENT_PULL_MATTER
@@ -111,6 +156,13 @@ func build(library: MaterialLibrary) -> void:
 		grain_amount[id] = material.grain * 2.0
 
 	_flatten_transitions(flat_transitions)
+
+
+## Eine Wahrscheinlichkeit 0..1 auf einen Wurf gegen [code]randi() & 0xFF[/code]
+## abbilden. 1.0 muss 256 ergeben, sonst schlaegt der Wurf in einem von 256
+## Faellen fehl und "immer" waere nicht immer - deshalb 256 statt 255.
+static func _chance_u8(chance: float) -> int:
+	return clampi(roundi(clampf(chance, 0.0, 1.0) * 256.0), 0, 256)
 
 
 ## Reibung 0..1 auf ein Umkehr-Budget abbilden.
@@ -146,6 +198,18 @@ func _resize_all(count: int) -> void:
 	starts_static.resize(count)
 	friction_u8.resize(count)
 	direction_change_budget.resize(count)
+	burn_rate.resize(count)
+	burn_exposes.resize(count)
+	clings_to_fuel.resize(count)
+	ignition_celsius.resize(count)
+	burn_celsius.resize(count)
+	burn_residue.resize(count)
+	burn_residue_chance_u8.resize(count)
+	burn_emits.resize(count)
+	burn_emit_chance_u8.resize(count)
+	pressure_rate.resize(count)
+	pressure_threshold.resize(count)
+	pressure_target.resize(count)
 	heat_transfer.resize(count)
 	ambient_pull.resize(count)
 	default_celsius.resize(count)

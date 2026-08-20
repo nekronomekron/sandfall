@@ -27,6 +27,11 @@ var stone: int
 var ice: int
 var steam: int
 var lava: int
+var wood: int
+var coal: int
+var fire: int
+var smoke: int
+var diamond: int
 
 
 ## Baut eine frische Simulation unter [param host] auf. [param host] muss im
@@ -55,6 +60,11 @@ func _init(host: Node, world_size := DEFAULT_WORLD_SIZE) -> void:
 	ice = registry.require_id(&"ice")
 	steam = registry.require_id(&"steam")
 	lava = registry.require_id(&"lava")
+	wood = registry.require_id(&"wood")
+	coal = registry.require_id(&"coal")
+	fire = registry.require_id(&"fire")
+	smoke = registry.require_id(&"smoke")
+	diamond = registry.require_id(&"diamond")
 
 
 ## Legt die Welt mit einem anderen Zufallsstartwert neu an. Damit laesst sich

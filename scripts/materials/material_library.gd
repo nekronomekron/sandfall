@@ -48,10 +48,31 @@ func resolve() -> void:
 		if material == null:
 			continue
 		for transition in material.transitions:
-			transition.target_id = id_of(transition.becomes)
-			if transition.target_id < 0:
-				push_error("MaterialLibrary: '%s' wechselt zu unbekanntem Material '%s'." % [
-					material.material_name, transition.becomes])
+			transition.target_id = _resolve(material, transition.becomes, "wechselt zu")
+		if material.burning != null:
+			var burning := material.burning
+			# Leerer Name heisst hier "nichts bleibt uebrig", nicht "unbekannt" -
+			# die Zelle wird dann zu Luft.
+			if burning.residue.is_empty():
+				burning.residue_id = EMPTY_ID
+			else:
+				burning.residue_id = _resolve(material, burning.residue, "hinterlaesst")
+			if burning.emits.is_empty():
+				burning.emits_id = -1
+			else:
+				burning.emits_id = _resolve(material, burning.emits, "entzuendet")
+		if material.pressure != null:
+			material.pressure.target_id = _resolve(
+				material, material.pressure.becomes, "wird unter Druck zu")
+
+
+## Einen Materialnamen in eine id aufloesen und einen unbekannten Namen melden.
+func _resolve(material: SandMaterial, target: StringName, relation: String) -> int:
+	var id := id_of(target)
+	if id < 0:
+		push_error("MaterialLibrary: '%s' %s unbekanntem Material '%s'." % [
+			material.material_name, relation, target])
+	return id
 
 
 func size() -> int:

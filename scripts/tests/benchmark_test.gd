@@ -32,6 +32,12 @@ const POOL := Rect2i(180, 420, 160, 58)
 const LAVA := Rect2i(230, 466, 60, 12)
 const SAND_FALL := Rect2i(300, 240, 40, 40)
 
+## Eine Holzwand im sichtbaren Ausschnitt, oben angezuendet.
+const WOOD_WALL := Rect2i(240, 400, 40, 60)
+
+## Holz unter einer Sandsaeule - beides statisch, gemessen wird der Druckpass.
+const BURIED_WOOD := Rect2i(560, 460, 40, 16)
+
 
 static func run(host: Node) -> void:
 	var world := TestSupport.new(host)
@@ -64,6 +70,21 @@ static func run(host: Node) -> void:
 		func(w: TestSupport) -> void:
 			w.set_gravity(Rect2i(400, 300, 80, 120), Vector2.UP)
 			w.fill(Rect2i(420, 400, 30, 20), w.sand))
+
+	# Feuer und Druck haben ihre eigenen Kosten an ganz verschiedenen Stellen:
+	# Feuer treibt Waerme, Bewegung und Rendern (jede Flamme und jede
+	# Rauchwolke ist eine Gaszelle), Druck kostet einen eigenen Spaltenlauf.
+	_case(world, renderer, "Brennendes Holz: Wand angezuendet", 400,
+		func(w: TestSupport) -> void:
+			w.fill(WOOD_WALL, w.wood, true)
+			w.fill(Rect2i(WOOD_WALL.position.x, WOOD_WALL.position.y - 1,
+				WOOD_WALL.size.x, 1), w.fire))
+
+	_case(world, renderer, "Druck: Holz unter einer Sandsaeule", 400,
+		func(w: TestSupport) -> void:
+			w.fill(BURIED_WOOD, w.wood, true)
+			w.fill(Rect2i(BURIED_WOOD.position.x, BURIED_WOOD.position.y - 120,
+				BURIED_WOOD.size.x, 120), w.sand, true))
 
 	_case(world, renderer, "Stress: Grossblock Sand + Wasser in freiem Fall", 300,
 		func(w: TestSupport) -> void:
@@ -100,6 +121,8 @@ static func _case(world: TestSupport, renderer: WorldRenderer, title: String,
 	var heat_chunks := 0
 	var heat_cells := 0
 	var moved := 0
+	var pressure_usec := 0
+	var pressure_columns := 0
 
 	# Der Ausschnitt steht still, damit die Messung nicht von einer
 	# Kamerafahrt abhaengt.
@@ -126,6 +149,8 @@ static func _case(world: TestSupport, renderer: WorldRenderer, title: String,
 		heat_chunks += world.simulation.stat_heat_chunks
 		heat_cells += world.simulation.stat_heat_cells
 		moved += world.simulation.stat_moved
+		pressure_usec += world.simulation.stat_pressure_usec
+		pressure_columns += world.simulation.stat_pressure_columns
 
 	var sorted_samples := Array(samples)
 	sorted_samples.sort()
@@ -136,9 +161,9 @@ static func _case(world: TestSupport, renderer: WorldRenderer, title: String,
 	TestSupport.heading("%s  (%d Frames)" % [title, frames])
 	print("  gesamt   Median %6.2f ms   Mittel %6.2f ms   p95 %6.2f ms   Max %6.2f ms" % [
 		median / 1000.0, average / 1000.0, p95 / 1000.0, worst_usec / 1000.0])
-	print("  davon    Waerme %6.2f ms   Bewegung %6.2f ms   Rendern %6.2f ms" % [
+	print("  davon    Waerme %6.2f ms   Bewegung %6.2f ms   Rendern %6.2f ms   Druck %6.2f ms" % [
 		heat_usec / 1000.0 / frames, move_usec / 1000.0 / frames,
-		render_usec / 1000.0 / frames])
-	print("  je Frame wache Chunks %5.1f   Waerme-Zellen %8.0f   Bewegungen %6.1f" % [
+		render_usec / 1000.0 / frames, pressure_usec / 1000.0 / frames])
+	print("  je Frame wache Chunks %5.1f   Waerme-Zellen %8.0f   Bewegungen %6.1f   Druckspalten %4.1f" % [
 		float(awake_chunks) / frames, float(heat_cells) / frames,
-		float(moved) / frames])
+		float(moved) / frames, float(pressure_columns) / frames])

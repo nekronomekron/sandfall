@@ -54,6 +54,11 @@ var move_generation: PackedByteArray
 ## Bit-gepacktes Ruhe-Gedaechtnis fuer das seitliche Ausbreiten, siehe
 ## [SandSimulation].
 var settle_state: PackedByteArray
+## Fortschritt einer laufenden Umwandlung, 0 bis 255. Geteilt von Brand und
+## Druck: eine Zelle brennt (dann liegt sie frei) oder steht unter Last (dann
+## ist sie begraben) - beides ist "wie weit ist die Umwandlung gediehen".
+## Ein gemeinsames Byte spart ein zweites Array ueber die ganze Welt.
+var conversion_progress: PackedByteArray
 var celsius: PackedFloat32Array
 ## Das Gravitationsfeld, ein Vektor je Zelle. Es ist STATISCH: gesetzt wird es
 ## beim Aufbau des Levels ueber [method set_gravity_area], danach ruehrt es
@@ -71,6 +76,15 @@ var chunk_awake: PackedByteArray        ## In diesem Frame zu simulieren.
 var chunk_awake_next: PackedByteArray   ## Im naechsten Frame zu simulieren.
 var chunk_needs_heat: PackedByteArray   ## Temperatur weicht ab, Waermepass noetig.
 var chunk_needs_redraw: PackedByteArray ## Pixel muessen neu gezeichnet werden.
+## Hier liegt druckempfindliches Material. Der [PressurePass] sieht sich nur
+## Spalten an, in denen mindestens ein Chunk das gesetzt hat - ohne Holz oder
+## Kohle in der Welt kostet der ganze Pass deshalb nichts.
+var chunk_has_pressure: PackedByteArray
+
+## Hat das Level irgendwo eine von [member base_gravity] abweichende
+## Schwerkraft gesetzt? Wenn nicht, spart sich der [PressurePass] die Pruefung
+## pro Zelle.
+var has_gravity_zones: bool = false
 
 ## Betroffener Bereich je Chunk, in Weltkoordinaten und einschliesslich. Ein
 ## wacher Chunk wird nur innerhalb dieses Rechtecks simuliert statt auf voller
@@ -113,6 +127,7 @@ func _init(size: Vector2i, chunk_edge: int, lookups: MaterialLookups, ambient: f
 	cell_flags.resize(cell_count)
 	move_generation.resize(cell_count)
 	settle_state.resize(cell_count)
+	conversion_progress.resize(cell_count)
 	celsius.resize(cell_count)
 	gravity.resize(cell_count)
 
@@ -120,6 +135,7 @@ func _init(size: Vector2i, chunk_edge: int, lookups: MaterialLookups, ambient: f
 	chunk_awake_next.resize(chunk_count)
 	chunk_needs_heat.resize(chunk_count)
 	chunk_needs_redraw.resize(chunk_count)
+	chunk_has_pressure.resize(chunk_count)
 	sim_bounds.resize(chunk_count * BOUNDS_STRIDE)
 	sim_bounds_next.resize(chunk_count * BOUNDS_STRIDE)
 	heat_bounds.resize(chunk_count * BOUNDS_STRIDE)
@@ -135,6 +151,7 @@ func clear() -> void:
 	cell_flags.fill(0)
 	move_generation.fill(0)
 	settle_state.fill(0)
+	conversion_progress.fill(0)
 	celsius.fill(ambient_celsius)
 	gravity.fill(base_gravity)
 
@@ -142,6 +159,8 @@ func clear() -> void:
 	chunk_awake_next.fill(1)
 	chunk_needs_heat.fill(0)
 	chunk_needs_redraw.fill(1)
+	chunk_has_pressure.fill(0)
+	has_gravity_zones = false
 	for chunk in chunk_count:
 		_fill_bounds(sim_bounds, chunk)
 		_fill_bounds(sim_bounds_next, chunk)
@@ -180,6 +199,11 @@ func set_cell(x: int, y: int, new_material: int, make_static: bool,
 	material_id[cell] = new_material
 	cell_flags[cell] = FLAG_STATIC if make_static else 0
 	settle_state[cell] = 0
+	# Frisch gesetzt heisst unversehrt: eine halb verbrannte Holzzelle, die
+	# uebermalt wird, faengt von vorne an.
+	conversion_progress[cell] = 0
+	if _lookups.pressure_rate[new_material] > 0:
+		mark_pressure_at(x, y)
 	# Statische und unbewegliche Zellen starten direkt im Ruhezustand, sonst
 	# meldet das HUD dauerhaft "fallend" fuer den Steinboden.
 	var can_move := not make_static and _lookups.movable[new_material] == 1
@@ -209,6 +233,8 @@ func set_gravity_area(area: Rect2i, vector: Vector2) -> void:
 	var bottom := mini(area.end.y - 1, height - 1)
 	if left > right or top > bottom:
 		return
+	if vector != base_gravity:
+		has_gravity_zones = true
 	for y in range(top, bottom + 1):
 		var row := y * width
 		for x in range(left, right + 1):
@@ -226,6 +252,37 @@ func gravity_at(x: int, y: int) -> Vector2:
 	if not in_bounds(x, y):
 		return base_gravity
 	return gravity[y * width + x]
+
+
+## Merkt den Chunk dieser Zelle fuer den [PressurePass] vor.
+func mark_pressure_at(x: int, y: int) -> void:
+	if not in_bounds(x, y):
+		return
+	chunk_has_pressure[(y / chunk_size) * chunks_x + (x / chunk_size)] = 1
+
+
+## Die Last auf einer Zelle: die Summe der Dichten entlang der Schwerkraft
+## darueber, geteilt durch 1000 - also in "Metern Wassersaeule".
+##
+## Laeuft die Spalte von oben neu durch und ist deshalb nur fuer einzelne
+## Abfragen gedacht (HUD, Selbsttests). Der [PressurePass] rechnet dieselbe
+## Summe nebenbei, waehrend er ohnehin ueber die Spalte laeuft, und braucht
+## diese Funktion nicht.
+func pressure_at(x: int, y: int) -> float:
+	if not in_bounds(x, y):
+		return 0.0
+	var load := 0.0
+	var cell := x
+	for row in y:
+		var material := material_id[cell]
+		if material == MaterialLibrary.EMPTY_ID:
+			load = 0.0
+		else:
+			if has_gravity_zones and gravity[cell] != base_gravity:
+				load = 0.0
+			load += _lookups.density[material] * PressurePass.LOAD_SCALE
+		cell += width
+	return load
 
 # --- Chunk-Verwaltung --------------------------------------------------------
 

@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="1_material"]
+[ext_resource type="Script" path="res://scripts/materials/pressure_change.gd" id="4_pressure"]
+
+[sub_resource type="Resource" script_class="PressureChange" id="Press"]
+script = ExtResource("4_pressure")
+threshold = 120.0
+rate = 6
+becomes = &"diamond"
+
+[resource]
+script = ExtResource("1_material")
+material_name = &"coal"
+display_name = "Kohle"
+color = Color(0.14, 0.13, 0.15, 1)
+grain = 0.13
+phase = 2
+density = 1400.0
+friction = 0.7
+conductivity = 0.05
+heat_capacity = 2.5
+pressure = SubResource("Press")

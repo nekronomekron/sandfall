@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="SandMaterial" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/materials/sand_material.gd" id="1_material"]
+
+[resource]
+script = ExtResource("1_material")
+material_name = &"diamond"
+display_name = "Diamant"
+color = Color(0.72, 0.93, 0.97, 1)
+grain = 0.04
+phase = 1
+density = 3500.0
+friction = 0.9
+conductivity = 0.8
+heat_capacity = 1.2

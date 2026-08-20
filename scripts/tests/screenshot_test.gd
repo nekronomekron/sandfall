@@ -71,6 +71,18 @@ func _seed_content() -> void:
 	grid.set_gravity_area(Rect2i(centre_x + 60, top - 20, 60, 80), Vector2.UP)
 	_fill(grid, Rect2i(centre_x + 76, top + 40, 28, 14), sand)
 
+	# Brennende Holzwand: Flamme, Rauch und die zurueckbleibende Kohle.
+	# Steht in der Luecke zwischen Sandhaufen und Gravitationszone, damit die
+	# Toolbar sie nicht verdeckt.
+	var wood := registry.require_id(&"wood")
+	var fire := registry.require_id(&"fire")
+	_fill(grid, Rect2i(centre_x + 44, floor_top - 60, 14, 60), wood, true)
+	_fill(grid, Rect2i(centre_x + 44, floor_top - 61, 14, 1), fire)
+
+	# Holz unter einer Sandsaeule - wird mit der Zeit zu Kohle und Diamant.
+	_fill(grid, Rect2i(centre_x - 116, floor_top - 8, 20, 8), wood, true)
+	_fill(grid, Rect2i(centre_x - 116, floor_top - 60, 20, 52), sand, true)
+
 
 func _fill(grid: CellGrid, rect: Rect2i, material: int, make_static := false) -> void:
 	for y in range(rect.position.y, rect.end.y):

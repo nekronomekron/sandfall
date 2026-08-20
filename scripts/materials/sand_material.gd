@@ -94,6 +94,29 @@ enum Phase {
 ## Aggregatzustands-FSM: Uebergaenge, die im Waermepass geprueft werden.
 @export var transitions: Array[MaterialTransition] = []
 
+@export_group("Feuer")
+
+## Macht das Material brennbar. Leer = es brennt nicht.
+@export var burning: BurnBehaviour
+
+## Fuer Flammen: bleibt liegen, solange brennbares Material danebenliegt.
+##
+## Ohne das laesst sich nichts anzuenden. Ein Gas steigt eine Zelle pro Frame
+## auf, der Waermepass laeuft aber nur jeden dritten Frame - eine Flamme, die
+## auf einen Holzstapel gelegt wird, ist schon zwei Zellen weit weg, bevor sie
+## das erste Mal Waerme abgeben durfte. Seitlich an einer Wand ginge es gut,
+## oben auf einer Flaeche nie.
+##
+## Eine Flamme haengt an ihrem Brennstoff, bis er weg ist - dann steigt sie
+## weiter auf wie jedes andere Gas.
+@export var clings_to_fuel: bool = false
+
+@export_group("Druck")
+
+## Macht das Material durch Druck verformbar. Leer = Druck laesst es kalt.
+@export var pressure: PressureChange
+
+@export_group("Waerme")
 @export_subgroup("Dauerquelle")
 
 ## Optionale Dauerquelle, die die Zelle aktiv auf [member emit_celsius] zieht.
@@ -131,4 +154,20 @@ func is_fluid() -> bool:
 ## Steigt entgegen der oertlichen Gravitation auf.
 func is_gas() -> bool:
 	return phase == Phase.GAS
+
+
+## Kann Feuer fangen? Siehe [BurnBehaviour].
+func is_flammable() -> bool:
+	return burning != null
+
+
+## Laesst dieses Material Feuer an eine Nachbarzelle heran? Luft und Gase tun
+## das, alles andere schirmt ab - unter Wasser brennt nichts.
+func exposes_neighbours() -> bool:
+	return phase == Phase.EMPTY or phase == Phase.GAS
+
+
+## Laesst sich durch Druck umwandeln? Siehe [PressureChange].
+func is_pressure_sensitive() -> bool:
+	return pressure != null
 
